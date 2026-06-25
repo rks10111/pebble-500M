@@ -842,7 +842,8 @@ def train(args: argparse.Namespace) -> None:
                 _, loss = forward_model(x, y)
             if loss is None:
                 raise RuntimeError("model did not return training loss")
-            accumulated_loss = loss.detach() if accumulated_loss is None else accumulated_loss + loss.detach()
+            loss_for_metrics = loss.detach().clone()
+            accumulated_loss = loss_for_metrics if accumulated_loss is None else accumulated_loss + loss_for_metrics
             (loss / accum_steps).backward()
 
         grad_norm: torch.Tensor | None = None
