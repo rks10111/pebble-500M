@@ -16,4 +16,20 @@ if tmux has-session -t "${session}" 2>/dev/null; then
 fi
 
 repo_dir_quoted="$(printf "%q" "${repo_dir}")"
-exec tmux new-session -s "${session}" "cd ${repo_dir_quoted} && scripts/prepare_50b_data_and_sync.sh"
+command="cd ${repo_dir_quoted} && bash scripts/prepare_50b_data_and_sync.sh"
+
+if [[ -n "${TMUX:-}" ]]; then
+  current_session="$(tmux display-message -p '#S')"
+  if tmux list-windows -t "${current_session}" -F '#W' | grep -Fxq "${session}"; then
+    echo "error: tmux window already exists in ${current_session}: ${session}" >&2
+    echo "Switch with: tmux select-window -t ${current_session}:${session}" >&2
+    exit 1
+  fi
+
+  tmux new-window -n "${session}" "${command}"
+  echo "started data prep in tmux window: ${current_session}:${session}"
+  echo "Switch with: tmux select-window -t ${current_session}:${session}"
+  exit 0
+fi
+
+exec tmux new-session -s "${session}" "${command}"
