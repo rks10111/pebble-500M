@@ -494,8 +494,11 @@ def maybe_compile(
 ) -> torch.nn.Module:
     if not enabled:
         return model
-    options = {"triton.cudagraphs": False} if disable_cudagraphs else None
-    return torch.compile(model, mode=mode, fullgraph=fullgraph, options=options)
+    if disable_cudagraphs:
+        import torch._inductor.config as inductor_config
+
+        inductor_config.triton.cudagraphs = False
+    return torch.compile(model, mode=mode, fullgraph=fullgraph)
 
 
 def sanitize_wandb_id(value: str) -> str:
