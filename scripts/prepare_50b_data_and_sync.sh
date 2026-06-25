@@ -177,6 +177,31 @@ if [[ ! -f "${data_dir}/manifest.json" ]]; then
 fi
 
 echo
+echo "== verify manifest targets =="
+DATA_DIR="${data_dir}" TRAIN_TOKENS="${train_tokens}" VAL_TOKENS="${val_tokens}" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+data_dir = Path(os.environ["DATA_DIR"])
+manifest = json.loads((data_dir / "manifest.json").read_text())
+expected = {
+    "train": int(os.environ["TRAIN_TOKENS"]),
+    "val": int(os.environ["VAL_TOKENS"]),
+}
+
+for split, target in expected.items():
+    actual = int(manifest["splits"][split]["tokens"])
+    if actual < target:
+        raise SystemExit(
+            f"{data_dir}/manifest.json has only {actual:,} {split} tokens; "
+            f"expected at least {target:,}. Move or remove the undersized data "
+            "directory before rerunning."
+        )
+    print(f"{split}: tokens={actual:,} target={target:,}")
+PY
+
+echo
 echo "== local data summary =="
 du -sh "${data_dir}"
 python - <<PY
