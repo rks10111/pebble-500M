@@ -233,7 +233,8 @@ pebble-train \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
   --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-50b \
   --max-tokens 25000000000 \
-  --micro-batch-size 16
+  --micro-batch-size 16 \
+  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b
 ```
 
 Try micro-batch sizes `8, 16, 24, 32, 40, 48, 64` and use the largest stable value that improves throughput.
@@ -257,6 +258,24 @@ AWS_REGION=eu-west-2 scripts/sync_checkpoints_to_s3.sh \
 
 This script uploads checkpoints, `metrics.jsonl`, and `samples.jsonl`. Training remains local and
 does not block on S3 uploads.
+
+For long runs, prefer automatic sync from the trainer:
+
+```bash
+pebble-train \
+  --config configs/pebble_500m_50b.yaml \
+  --data-dir /opt/dlami/nvme/pebble-data-50b \
+  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-50b \
+  --resume /opt/dlami/nvme/pebble-runs/pebble-500m-50b/checkpoints/latest-000000000123.pt \
+  --max-tokens 50000000000 \
+  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b
+```
+
+When `--s3-sync-uri` is set, `pebble-train` syncs checkpoints, `metrics.jsonl`, and `samples.jsonl`
+after every milestone checkpoint, rolling latest checkpoint, and final checkpoint. You can also set
+`PEBBLE_S3_RUN_URI` in the environment instead of passing the flag. Use `--no-s3-sync` to disable
+automatic sync for a run. Checkpoints are written atomically via a temporary file and rename before
+sync, so S3 should not receive a partially written `.pt` file.
 
 ## Resume
 

@@ -15,7 +15,7 @@ if [[ ! -d "${run_dir}/checkpoints" ]]; then
   exit 1
 fi
 
-aws s3 sync "${run_dir}/checkpoints" "${s3_uri}/checkpoints" --region "${region}" --only-show-errors
+aws s3 sync "${run_dir}/checkpoints" "${s3_uri}/checkpoints" --region "${region}" --only-show-errors --exclude "*.tmp"
 aws s3 cp "${run_dir}/metrics.jsonl" "${s3_uri}/metrics.jsonl" --region "${region}" --only-show-errors || true
 aws s3 cp "${run_dir}/samples.jsonl" "${s3_uri}/samples.jsonl" --region "${region}" --only-show-errors || true
 

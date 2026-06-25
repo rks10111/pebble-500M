@@ -29,6 +29,32 @@ def test_wandb_tracking_defaults_to_enabled(monkeypatch) -> None:
     assert args.wandb_watch is False
     assert args.wandb_watch_log == "all"
     assert args.wandb_save_code is True
+    assert args.s3_sync_uri is None
+    assert args.s3_sync_region == "eu-west-2"
+    assert args.no_s3_sync is False
+
+
+def test_train_s3_sync_can_default_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("PEBBLE_S3_RUN_URI", "s3://statement-llm-training/pebble-500m/runs/env")
+    monkeypatch.setenv("AWS_REGION", "ap-south-1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "pebble-train",
+            "--config",
+            "configs/smoke.yaml",
+            "--data-dir",
+            "/tmp/data",
+            "--out-dir",
+            "/tmp/run",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.s3_sync_uri == "s3://statement-llm-training/pebble-500m/runs/env"
+    assert args.s3_sync_region == "ap-south-1"
 
 
 def test_wandb_payload_prefixes_train_metrics() -> None:

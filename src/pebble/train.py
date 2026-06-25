@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -146,6 +147,24 @@ def parse_args() -> argparse.Namespace:
         help="Disable W&B code saving.",
     )
     parser.set_defaults(wandb_save_code=True)
+    parser.add_argument(
+        "--s3-sync-uri",
+        default=os.environ.get("PEBBLE_S3_RUN_URI"),
+        help=(
+            "Optional S3 URI for automatic run artifact sync after checkpoint saves. "
+            "Defaults to PEBBLE_S3_RUN_URI when set."
+        ),
+    )
+    parser.add_argument(
+        "--s3-sync-region",
+        default=os.environ.get("AWS_REGION", "eu-west-2"),
+        help="AWS region for automatic S3 sync. Defaults to AWS_REGION or eu-west-2.",
+    )
+    parser.add_argument(
+        "--no-s3-sync",
+        action="store_true",
+        help="Disable automatic S3 sync even when --s3-sync-uri or PEBBLE_S3_RUN_URI is set.",
+    )
     return parser.parse_args()
 
 
@@ -367,10 +386,13 @@ def save_checkpoint(
     else:
         name = f"milestone-{tokens_seen:012d}.pt"
     path = checkpoint_dir / name
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.unlink(missing_ok=True)
     torch.save(
         checkpoint_payload(model, optimizer, cfg, tokens_seen, global_step, train_loader_state),
-        path,
+        tmp_path,
     )
+    os.replace(tmp_path, path)
     return path
 
 
@@ -392,6 +414,75 @@ def load_checkpoint(
     train_loader.load_state_dict(checkpoint.get("train_loader", {}))
     restore_rng(checkpoint)
     return int(checkpoint["tokens_seen"]), int(checkpoint["global_step"])
+
+
+def s3_sync_enabled(args: argparse.Namespace) -> bool:
+    return bool(args.s3_sync_uri) and not bool(args.no_s3_sync)
+
+
+def sync_run_artifacts_to_s3(
+    run_dir: Path,
+    s3_uri: str,
+    region: str,
+    runner: Any = subprocess.run,
+) -> bool:
+    checkpoint_dir = run_dir / "checkpoints"
+    if not checkpoint_dir.is_dir():
+        print(f"warning: skipping S3 sync because checkpoints dir is missing: {checkpoint_dir}", flush=True)
+        return False
+
+    target = s3_uri.rstrip("/")
+    commands: list[list[str]] = [
+        [
+            "aws",
+            "s3",
+            "sync",
+            os.fspath(checkpoint_dir),
+            f"{target}/checkpoints",
+            "--region",
+            region,
+            "--only-show-errors",
+            "--exclude",
+            "*.tmp",
+        ]
+    ]
+    for name in ("metrics.jsonl", "samples.jsonl"):
+        path = run_dir / name
+        if path.exists():
+            commands.append(
+                [
+                    "aws",
+                    "s3",
+                    "cp",
+                    os.fspath(path),
+                    f"{target}/{name}",
+                    "--region",
+                    region,
+                    "--only-show-errors",
+                ]
+            )
+
+    try:
+        for command in commands:
+            runner(command, check=True)
+    except FileNotFoundError:
+        print("warning: automatic S3 sync failed because the aws CLI is not installed", flush=True)
+        return False
+    except subprocess.CalledProcessError as exc:
+        print(f"warning: automatic S3 sync failed with exit code {exc.returncode}", flush=True)
+        return False
+    return True
+
+
+def maybe_sync_run_artifacts_to_s3(args: argparse.Namespace, run_dir: Path, reason: str) -> None:
+    if not s3_sync_enabled(args):
+        return
+    print(
+        f"syncing run artifacts to S3 after {reason}: {args.s3_sync_uri.rstrip('/')}",
+        flush=True,
+    )
+    if sync_run_artifacts_to_s3(run_dir, args.s3_sync_uri, args.s3_sync_region):
+        print(f"synced run artifacts to S3 after {reason}", flush=True)
 
 
 def maybe_compile(model: Transformer, enabled: bool, mode: str, fullgraph: bool) -> torch.nn.Module:
@@ -457,6 +548,9 @@ def wandb_config(
             "compile_enabled": bool(compile_enabled),
             "compile_mode": args.compile_mode if compile_enabled else "disabled",
             "compile_fullgraph": bool(compile_fullgraph if compile_enabled else False),
+            "s3_sync_enabled": s3_sync_enabled(args),
+            "s3_sync_uri": args.s3_sync_uri,
+            "s3_sync_region": args.s3_sync_region,
         },
     }
 
@@ -855,6 +949,7 @@ def train(args: argparse.Namespace) -> None:
                 sample_prompts(model, cfg, device, samples_path, tokens_seen)
                 completed_milestones.add(milestone)
                 print(f"saved milestone checkpoint {path}", flush=True)
+                maybe_sync_run_artifacts_to_s3(args, out_dir, f"milestone checkpoint {path.name}")
 
         if (time.time() - last_checkpoint_time) / 60.0 >= cfg.checkpointing.save_interval_minutes:
             path = save_checkpoint(
@@ -869,6 +964,7 @@ def train(args: argparse.Namespace) -> None:
             )
             prune_latest_checkpoints(checkpoint_dir, cfg.checkpointing.keep_last)
             print(f"saved latest checkpoint {path}", flush=True)
+            maybe_sync_run_artifacts_to_s3(args, out_dir, f"latest checkpoint {path.name}")
             last_checkpoint_time = time.time()
 
     if device.type == "cuda":
@@ -894,6 +990,7 @@ def train(args: argparse.Namespace) -> None:
         train_loader.state_dict(),
     )
     prune_latest_checkpoints(checkpoint_dir, cfg.checkpointing.keep_last)
+    maybe_sync_run_artifacts_to_s3(args, out_dir, f"final checkpoint {final_path.name}")
     final_eval_metrics = evaluate_metrics(forward_model, val_loader, cfg, device, cfg.training.eval_tokens)
     val_loss = float(final_eval_metrics["loss"])
     total_seconds = max(time.time() - started, 1e-6)
@@ -924,6 +1021,7 @@ def train(args: argparse.Namespace) -> None:
     append_jsonl(metrics_path, final_metrics)
     log_wandb_record(wandb_run, final_metrics, max_tokens=max_tokens)
     update_wandb_summary(wandb_run, final_metrics)
+    maybe_sync_run_artifacts_to_s3(args, out_dir, "final metrics")
     if wandb_run is not None:
         wandb_run.finish()
     print(
