@@ -1,0 +1,73 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.python-version
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging and build artifacts
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+*.egg
+
+# Notebook artifacts
+.ipynb_checkpoints/
+
+# Logs and local runtime output
+logs/
+*.log
+
+# Training data, runs, and model artifacts
+runs/
+data/
+checkpoints/
+outputs/
+wandb/
+mlruns/
+lightning_logs/
+events.out.tfevents.*
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.npy
+*.npz
+*.arrow
+*.parquet
+*.jsonl
+*.jsonl.gz
+
+# Local agent instructions
+AGENTS.md

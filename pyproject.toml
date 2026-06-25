@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pebble-500m"
+version = "0.1.0"
+description = "A from-scratch 500M parameter LLM pretraining experiment for one RTX PRO Server 6000."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "datasets>=3.0.0",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+  "tiktoken>=0.7.0",
+  "torch>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pebble-prepare-data = "pebble.prepare_fineweb_edu:main"
+pebble-make-synthetic-data = "pebble.make_synthetic_data:main"
+pebble-train = "pebble.train:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
