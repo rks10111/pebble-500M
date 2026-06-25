@@ -116,6 +116,27 @@ pebble-prepare-data \
   --shard-tokens 100000000
 ```
 
+Or start the full tokenization-and-S3-backup workflow in tmux:
+
+```bash
+cd ~/pebble-500M
+scripts/start_data_prep_tmux.sh
+```
+
+This runs `scripts/prepare_50b_data_and_sync.sh`, which verifies disk/S3 access, tokenizes the
+50B dataset, writes logs under `/opt/dlami/nvme/logs`, and syncs the finished dataset to S3.
+It skips tokenization if `manifest.json` already exists. It refuses to run on a non-empty
+partial data directory because tokenization is not resumable.
+
+After a successful run, the script asks AWS to stop the EC2 instance to avoid idle GPU spend.
+It discovers the instance id from `PEBBLE_INSTANCE_ID` or the local EC2 DMI asset tag; no public
+IP address is needed in the scripts.
+Disable that behavior with:
+
+```bash
+PEBBLE_STOP_INSTANCE_ON_DONE=0 scripts/start_data_prep_tmux.sh
+```
+
 The output includes:
 
 - `manifest.json`: shard paths, token counts, seed, tokenizer, and split metadata
