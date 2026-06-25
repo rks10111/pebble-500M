@@ -90,6 +90,18 @@ runs. Enable it only for debugging:
 --wandb-watch
 ```
 
+The 50B tokenization wrapper also logs W&B progress by default. It records rows/documents seen,
+train/validation tokens written, total-token progress, shard counts, elapsed time, and tokenization
+throughput. Local W&B files are written under `/opt/dlami/nvme/logs/wandb`, not inside the
+tokenized dataset directory.
+
+Disable tokenization W&B, or force offline mode, with:
+
+```bash
+PEBBLE_WANDB=0 scripts/start_data_prep_tmux.sh
+WANDB_MODE=offline scripts/start_data_prep_tmux.sh
+```
+
 ## Prepare Data
 
 The data pipeline uses a deterministic document-level stream from `HuggingFaceFW/fineweb-edu`, reserves fixed validation documents first, then writes GPT-2-tokenized `uint16` mmap shards. Training never tokenizes raw text live.
@@ -124,9 +136,9 @@ scripts/start_data_prep_tmux.sh
 ```
 
 This runs `scripts/prepare_50b_data_and_sync.sh`, which verifies disk/S3 access, tokenizes the
-50B dataset, writes logs under `/opt/dlami/nvme/logs`, and syncs the finished dataset to S3.
-It skips tokenization if `manifest.json` already exists. It refuses to run on a non-empty
-partial data directory because tokenization is not resumable.
+50B dataset, writes logs under `/opt/dlami/nvme/logs`, logs W&B data-prep progress by default,
+and syncs the finished dataset to S3. It skips tokenization if `manifest.json` already exists.
+It refuses to run on a non-empty partial data directory because tokenization is not resumable.
 
 After a successful run, the script asks AWS to stop the EC2 instance to avoid idle GPU spend.
 It discovers the instance id from `PEBBLE_INSTANCE_ID` or the local EC2 DMI asset tag; no public

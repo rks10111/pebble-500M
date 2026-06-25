@@ -17,10 +17,23 @@ for key in \
   PEBBLE_TRAIN_TOKENS \
   PEBBLE_VAL_TOKENS \
   PEBBLE_SHARD_TOKENS \
+  PEBBLE_LOG_INTERVAL_DOCS \
   PEBBLE_RUN_S3_SMOKE \
   PEBBLE_SYNC_DATA_TO_S3 \
   PEBBLE_STOP_INSTANCE_ON_DONE \
-  PEBBLE_INSTANCE_ID; do
+  PEBBLE_INSTANCE_ID \
+  PEBBLE_WANDB \
+  WANDB_PROJECT \
+  WANDB_ENTITY \
+  WANDB_RUN_ID \
+  WANDB_NAME \
+  WANDB_GROUP \
+  WANDB_RUN_GROUP \
+  WANDB_TAGS \
+  WANDB_JOB_TYPE \
+  WANDB_MODE \
+  WANDB_DIR \
+  WANDB_RESUME; do
   if [[ -v "${key}" ]]; then
     caller_env["${key}"]="${!key}"
   fi
@@ -47,10 +60,20 @@ log_dir="${PEBBLE_LOG_DIR:-/opt/dlami/nvme/logs}"
 train_tokens="${PEBBLE_TRAIN_TOKENS:-50000000000}"
 val_tokens="${PEBBLE_VAL_TOKENS:-50000000}"
 shard_tokens="${PEBBLE_SHARD_TOKENS:-100000000}"
+log_interval_docs="${PEBBLE_LOG_INTERVAL_DOCS:-10000}"
 region="${AWS_REGION:-eu-west-2}"
 run_s3_smoke="${PEBBLE_RUN_S3_SMOKE:-1}"
 sync_to_s3="${PEBBLE_SYNC_DATA_TO_S3:-1}"
 stop_instance_on_done="${PEBBLE_STOP_INSTANCE_ON_DONE:-1}"
+wandb_enabled="${PEBBLE_WANDB:-1}"
+wandb_project="${WANDB_PROJECT:-pebble-500m}"
+wandb_job_type="${WANDB_JOB_TYPE:-data-prep}"
+wandb_run_name="${WANDB_NAME:-pebble-500m-50b-tokenization}"
+wandb_group="${WANDB_GROUP:-${WANDB_RUN_GROUP:-pebble-500m-50b}}"
+wandb_tags="${WANDB_TAGS:-data-prep,tokenization,50b}"
+wandb_mode="${WANDB_MODE:-online}"
+wandb_dir="${WANDB_DIR:-${log_dir}/wandb}"
+wandb_resume="${WANDB_RESUME:-allow}"
 
 mkdir -p "${data_dir}" "${log_dir}"
 mkdir -p "${HF_HOME:-/opt/dlami/nvme/hf-cache}" "${HF_DATASETS_CACHE:-/opt/dlami/nvme/hf-cache/datasets}"
@@ -72,7 +95,12 @@ echo "log_dir=${log_dir}"
 echo "train_tokens=${train_tokens}"
 echo "val_tokens=${val_tokens}"
 echo "shard_tokens=${shard_tokens}"
+echo "log_interval_docs=${log_interval_docs}"
 echo "region=${region}"
+echo "wandb_enabled=${wandb_enabled}"
+echo "wandb_project=${wandb_project}"
+echo "wandb_mode=${wandb_mode}"
+echo "wandb_dir=${wandb_dir}"
 echo "stop_instance_on_done=${stop_instance_on_done}"
 
 echo
@@ -101,12 +129,45 @@ else
   echo
   echo "== prepare =="
   echo "writing log to ${log_path}"
+
+  wandb_args=()
+  case "${wandb_enabled}" in
+    1|true|TRUE|yes|YES|on|ON)
+      wandb_args+=(--wandb)
+      ;;
+    0|false|FALSE|no|NO|off|OFF)
+      wandb_args+=(--no-wandb)
+      ;;
+    *)
+      echo "error: PEBBLE_WANDB must be 1/0, true/false, yes/no, or on/off" >&2
+      exit 1
+      ;;
+  esac
+  wandb_args+=(
+    --wandb-project "${wandb_project}"
+    --wandb-run-name "${wandb_run_name}"
+    --wandb-group "${wandb_group}"
+    --wandb-tags "${wandb_tags}"
+    --wandb-job-type "${wandb_job_type}"
+    --wandb-mode "${wandb_mode}"
+    --wandb-dir "${wandb_dir}"
+    --wandb-resume "${wandb_resume}"
+  )
+  if [[ -n "${WANDB_ENTITY:-}" ]]; then
+    wandb_args+=(--wandb-entity "${WANDB_ENTITY}")
+  fi
+  if [[ -n "${WANDB_RUN_ID:-}" ]]; then
+    wandb_args+=(--wandb-run-id "${WANDB_RUN_ID}")
+  fi
+
   pebble-prepare-data \
     --config "${config}" \
     --out-dir "${data_dir}" \
     --train-tokens "${train_tokens}" \
     --val-tokens "${val_tokens}" \
     --shard-tokens "${shard_tokens}" \
+    --log-interval-docs "${log_interval_docs}" \
+    "${wandb_args[@]}" \
     2>&1 | tee "${log_path}"
 fi
 
