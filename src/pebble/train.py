@@ -838,6 +838,9 @@ def train(args: argparse.Namespace) -> None:
         accumulated_loss: torch.Tensor | None = None
         for _ in range(accum_steps):
             x, y = train_loader.next_batch()
+            mark_cudagraph_step = getattr(torch.compiler, "cudagraph_mark_step_begin", None)
+            if compile_enabled and device.type == "cuda" and mark_cudagraph_step is not None:
+                mark_cudagraph_step()
             with autocast_context(device, cfg.training.precision):
                 _, loss = forward_model(x, y)
             if loss is None:
