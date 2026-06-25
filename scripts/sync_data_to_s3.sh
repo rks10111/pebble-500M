@@ -15,5 +15,6 @@ if [[ ! -f "${data_dir}/manifest.json" ]]; then
   exit 1
 fi
 
-aws s3 sync "${data_dir}" "${s3_uri}" --region "${region}" --only-show-errors
+aws s3 sync "${data_dir}" "${s3_uri}" --exclude "manifest.json" --region "${region}" --only-show-errors
+aws s3 cp "${data_dir}/manifest.json" "${s3_uri}/manifest.json" --region "${region}" --only-show-errors
 echo "synced tokenized data from ${data_dir} to ${s3_uri}"

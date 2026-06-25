@@ -14,7 +14,10 @@ for key in \
   PEBBLE_S3_RUN_URI \
   PEBBLE_RESTORE_DATA \
   PEBBLE_RESTORE_RUN \
-  PEBBLE_ALLOW_UNMOUNTED_NVME; do
+  PEBBLE_ALLOW_UNMOUNTED_NVME \
+  PEBBLE_VERIFY_TARGET_TOKENS \
+  PEBBLE_EXPECT_TRAIN_TOKENS \
+  PEBBLE_EXPECT_VAL_TOKENS; do
   if [[ -v "${key}" ]]; then
     caller_env["${key}"]="${!key}"
   fi
@@ -36,6 +39,9 @@ Environment overrides:
   PEBBLE_RESTORE_DATA        default: 1
   PEBBLE_RESTORE_RUN         default: 1
   PEBBLE_ALLOW_UNMOUNTED_NVME default: 0
+  PEBBLE_VERIFY_TARGET_TOKENS default: 1
+  PEBBLE_EXPECT_TRAIN_TOKENS default: 50000000000
+  PEBBLE_EXPECT_VAL_TOKENS   default: 50000000
 EOF
 }
 
@@ -72,6 +78,9 @@ s3_run_uri="${2:-${PEBBLE_S3_RUN_URI:-s3://statement-llm-training/pebble-500m/ru
 restore_data="${PEBBLE_RESTORE_DATA:-1}"
 restore_run="${PEBBLE_RESTORE_RUN:-1}"
 allow_unmounted_nvme="${PEBBLE_ALLOW_UNMOUNTED_NVME:-0}"
+verify_target_tokens="${PEBBLE_VERIFY_TARGET_TOKENS:-1}"
+expect_train_tokens="${PEBBLE_EXPECT_TRAIN_TOKENS:-50000000000}"
+expect_val_tokens="${PEBBLE_EXPECT_VAL_TOKENS:-50000000}"
 
 command -v aws >/dev/null
 
@@ -107,18 +116,33 @@ verify_data_manifest() {
     exit 1
   fi
 
-  DATA_DIR="${data_dir}" python - <<'PY'
+  DATA_DIR="${data_dir}" \
+    VERIFY_TARGET_TOKENS="${verify_target_tokens}" \
+    EXPECT_TRAIN_TOKENS="${expect_train_tokens}" \
+    EXPECT_VAL_TOKENS="${expect_val_tokens}" \
+    python - <<'PY'
 import json
 import os
 from pathlib import Path
 
 data_dir = Path(os.environ["DATA_DIR"])
 manifest = json.loads((data_dir / "manifest.json").read_text())
+verify_target_tokens = os.environ["VERIFY_TARGET_TOKENS"] == "1"
+expected_tokens = {
+    "train": int(os.environ["EXPECT_TRAIN_TOKENS"]),
+    "val": int(os.environ["EXPECT_VAL_TOKENS"]),
+}
 
 for split in ("train", "val"):
     info = manifest["splits"].get(split)
     if not info:
         raise SystemExit(f"missing split in manifest: {split}")
+    tokens = int(info["tokens"])
+    if verify_target_tokens and tokens < expected_tokens[split]:
+        raise SystemExit(
+            f"restored {split} split has only {tokens:,} tokens; "
+            f"expected at least {expected_tokens[split]:,}"
+        )
     missing = []
     wrong_size = []
     for shard in info["shards"]:
@@ -133,7 +157,7 @@ for split in ("train", "val"):
         raise SystemExit("missing shard files:\n" + "\n".join(missing[:20]))
     if wrong_size:
         raise SystemExit("wrong shard sizes:\n" + "\n".join(wrong_size[:20]))
-    print(f"{split}: tokens={info['tokens']:,} shards={len(info['shards'])}")
+    print(f"{split}: tokens={tokens:,} shards={len(info['shards'])}")
 
 print("data manifest verification passed")
 PY
@@ -156,6 +180,9 @@ echo "s3_data_uri=${s3_data_uri%/}"
 echo "restore_run=${restore_run}"
 echo "run_dir=${run_dir}"
 echo "s3_run_uri=${s3_run_uri%/}"
+echo "verify_target_tokens=${verify_target_tokens}"
+echo "expect_train_tokens=${expect_train_tokens}"
+echo "expect_val_tokens=${expect_val_tokens}"
 
 echo
 echo "== disk =="
