@@ -485,10 +485,17 @@ def maybe_sync_run_artifacts_to_s3(args: argparse.Namespace, run_dir: Path, reas
         print(f"synced run artifacts to S3 after {reason}", flush=True)
 
 
-def maybe_compile(model: Transformer, enabled: bool, mode: str, fullgraph: bool) -> torch.nn.Module:
+def maybe_compile(
+    model: Transformer,
+    enabled: bool,
+    mode: str,
+    fullgraph: bool,
+    disable_cudagraphs: bool = False,
+) -> torch.nn.Module:
     if not enabled:
         return model
-    return torch.compile(model, mode=mode, fullgraph=fullgraph)
+    options = {"triton.cudagraphs": False} if disable_cudagraphs else None
+    return torch.compile(model, mode=mode, fullgraph=fullgraph, options=options)
 
 
 def sanitize_wandb_id(value: str) -> str:
@@ -760,11 +767,13 @@ def train(args: argparse.Namespace) -> None:
     if args.no_compile:
         compile_enabled = False
     compile_fullgraph = not args.compile_allow_graph_breaks
+    compile_disable_cudagraphs = compile_enabled and device.type == "cuda" and accum_steps > 1
     forward_model = maybe_compile(
         model,
         compile_enabled,
         mode=args.compile_mode,
         fullgraph=compile_fullgraph,
+        disable_cudagraphs=compile_disable_cudagraphs,
     )
 
     param_count = model.parameter_count()
@@ -777,6 +786,7 @@ def train(args: argparse.Namespace) -> None:
         f"compile={compile_enabled} "
         f"compile_mode={args.compile_mode if compile_enabled else 'disabled'} "
         f"compile_fullgraph={compile_fullgraph if compile_enabled else False} "
+        f"compile_cudagraphs={not compile_disable_cudagraphs if compile_enabled else False} "
         f"warmup_steps={warmup_steps}",
         flush=True,
     )
