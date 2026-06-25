@@ -485,19 +485,9 @@ def maybe_sync_run_artifacts_to_s3(args: argparse.Namespace, run_dir: Path, reas
         print(f"synced run artifacts to S3 after {reason}", flush=True)
 
 
-def maybe_compile(
-    model: Transformer,
-    enabled: bool,
-    mode: str,
-    fullgraph: bool,
-    disable_cudagraphs: bool = False,
-) -> torch.nn.Module:
+def maybe_compile(model: Transformer, enabled: bool, mode: str, fullgraph: bool) -> torch.nn.Module:
     if not enabled:
         return model
-    if disable_cudagraphs:
-        import torch._inductor.config as inductor_config
-
-        inductor_config.triton.cudagraphs = False
     return torch.compile(model, mode=mode, fullgraph=fullgraph)
 
 
@@ -769,14 +759,19 @@ def train(args: argparse.Namespace) -> None:
         compile_enabled = True
     if args.no_compile:
         compile_enabled = False
+    if compile_enabled and device.type == "cuda" and accum_steps > 1:
+        print(
+            "warning: disabling torch.compile for CUDA gradient accumulation; "
+            "this PyTorch build replays CUDAGraph tensors across micro-steps",
+            flush=True,
+        )
+        compile_enabled = False
     compile_fullgraph = not args.compile_allow_graph_breaks
-    compile_disable_cudagraphs = compile_enabled and device.type == "cuda" and accum_steps > 1
     forward_model = maybe_compile(
         model,
         compile_enabled,
         mode=args.compile_mode,
         fullgraph=compile_fullgraph,
-        disable_cudagraphs=compile_disable_cudagraphs,
     )
 
     param_count = model.parameter_count()
@@ -789,7 +784,6 @@ def train(args: argparse.Namespace) -> None:
         f"compile={compile_enabled} "
         f"compile_mode={args.compile_mode if compile_enabled else 'disabled'} "
         f"compile_fullgraph={compile_fullgraph if compile_enabled else False} "
-        f"compile_cudagraphs={not compile_disable_cudagraphs if compile_enabled else False} "
         f"warmup_steps={warmup_steps}",
         flush=True,
     )
@@ -851,9 +845,6 @@ def train(args: argparse.Namespace) -> None:
         accumulated_loss: torch.Tensor | None = None
         for _ in range(accum_steps):
             x, y = train_loader.next_batch()
-            mark_cudagraph_step = getattr(torch.compiler, "cudagraph_mark_step_begin", None)
-            if compile_enabled and device.type == "cuda" and mark_cudagraph_step is not None:
-                mark_cudagraph_step()
             with autocast_context(device, cfg.training.precision):
                 _, loss = forward_model(x, y)
             if loss is None:
