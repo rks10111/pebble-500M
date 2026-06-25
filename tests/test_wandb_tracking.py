@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sys
 
-from pebble.train import parse_args, wandb_payload
+import torch
+
+from pebble.train import DEFAULT_COMPILE_MODE, effective_compile_mode, parse_args, wandb_payload
 
 
 def test_wandb_tracking_defaults_to_enabled(monkeypatch) -> None:
@@ -29,9 +31,40 @@ def test_wandb_tracking_defaults_to_enabled(monkeypatch) -> None:
     assert args.wandb_watch is False
     assert args.wandb_watch_log == "all"
     assert args.wandb_save_code is True
+    assert args.compile_mode == DEFAULT_COMPILE_MODE
     assert args.s3_sync_uri is None
     assert args.s3_sync_region == "eu-west-2"
     assert args.no_s3_sync is False
+
+
+def test_cuda_accumulation_uses_no_cudagraph_compile_mode() -> None:
+    assert (
+        effective_compile_mode(
+            compile_enabled=True,
+            requested_mode="max-autotune",
+            device=torch.device("cuda"),
+            accum_steps=64,
+        )
+        == DEFAULT_COMPILE_MODE
+    )
+    assert (
+        effective_compile_mode(
+            compile_enabled=True,
+            requested_mode="reduce-overhead",
+            device=torch.device("cuda"),
+            accum_steps=64,
+        )
+        == DEFAULT_COMPILE_MODE
+    )
+    assert (
+        effective_compile_mode(
+            compile_enabled=True,
+            requested_mode="max-autotune",
+            device=torch.device("cuda"),
+            accum_steps=1,
+        )
+        == "max-autotune"
+    )
 
 
 def test_train_s3_sync_can_default_from_environment(monkeypatch) -> None:

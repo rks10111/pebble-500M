@@ -21,6 +21,10 @@ from pebble.data import SequentialTokenLoader, build_loaders
 from pebble.model import Transformer, lr_for_tokens
 
 
+DEFAULT_COMPILE_MODE = "max-autotune-no-cudagraphs"
+CUDAGRAPH_COMPILE_MODES = {"max-autotune", "reduce-overhead"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the Pebble decoder-only Transformer.")
     parser.add_argument("--config", required=True, help="Path to YAML config.")
@@ -35,13 +39,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-compile", dest="no_compile", action="store_true", help="Disable torch.compile.")
     parser.add_argument(
         "--compile-mode",
-        default="max-autotune",
-        help="torch.compile mode to use when compilation is enabled.",
+        default=DEFAULT_COMPILE_MODE,
+        help=(
+            "torch.compile mode to use when compilation is enabled. "
+            f"Defaults to {DEFAULT_COMPILE_MODE} to avoid CUDAGraph replay buffers "
+            "during gradient accumulation."
+        ),
     )
     parser.add_argument(
         "--compile-allow-graph-breaks",
         action="store_true",
-        help="Compile without fullgraph=True; useful if max-autotune fullgraph fails during debugging.",
+        help="Compile without fullgraph=True; useful if fullgraph compilation fails during debugging.",
     )
     parser.add_argument(
         "--warmup-steps",
@@ -491,6 +499,12 @@ def maybe_compile(model: Transformer, enabled: bool, mode: str, fullgraph: bool)
     return torch.compile(model, mode=mode, fullgraph=fullgraph)
 
 
+def effective_compile_mode(compile_enabled: bool, requested_mode: str, device: torch.device, accum_steps: int) -> str:
+    if compile_enabled and device.type == "cuda" and accum_steps > 1 and requested_mode in CUDAGRAPH_COMPILE_MODES:
+        return DEFAULT_COMPILE_MODE
+    return requested_mode
+
+
 def sanitize_wandb_id(value: str) -> str:
     sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value)
     sanitized = sanitized.strip("-_")
@@ -530,6 +544,7 @@ def wandb_config(
     accum_steps: int,
     tokens_per_step: int,
     compile_enabled: bool,
+    compile_mode: str,
     compile_fullgraph: bool,
 ) -> dict[str, Any]:
     return {
@@ -546,7 +561,7 @@ def wandb_config(
             "tokens_per_step": int(tokens_per_step),
             "parameter_count": int(param_count),
             "compile_enabled": bool(compile_enabled),
-            "compile_mode": args.compile_mode if compile_enabled else "disabled",
+            "compile_mode": compile_mode if compile_enabled else "disabled",
             "compile_fullgraph": bool(compile_fullgraph if compile_enabled else False),
             "s3_sync_enabled": s3_sync_enabled(args),
             "s3_sync_uri": args.s3_sync_uri,
@@ -567,6 +582,7 @@ def init_wandb(
     accum_steps: int,
     tokens_per_step: int,
     compile_enabled: bool,
+    compile_mode: str,
     compile_fullgraph: bool,
 ) -> Any | None:
     if not args.wandb:
@@ -604,6 +620,7 @@ def init_wandb(
             accum_steps,
             tokens_per_step,
             compile_enabled,
+            compile_mode,
             compile_fullgraph,
         ),
         save_code=args.wandb_save_code,
@@ -759,18 +776,18 @@ def train(args: argparse.Namespace) -> None:
         compile_enabled = True
     if args.no_compile:
         compile_enabled = False
-    if compile_enabled and device.type == "cuda" and accum_steps > 1:
+    compile_mode = effective_compile_mode(compile_enabled, args.compile_mode, device, accum_steps)
+    if compile_mode != args.compile_mode:
         print(
-            "warning: disabling torch.compile for CUDA gradient accumulation; "
-            "this PyTorch build replays CUDAGraph tensors across micro-steps",
+            f"warning: replacing torch.compile mode {args.compile_mode!r} with "
+            f"{DEFAULT_COMPILE_MODE!r} for CUDA gradient accumulation",
             flush=True,
         )
-        compile_enabled = False
     compile_fullgraph = not args.compile_allow_graph_breaks
     forward_model = maybe_compile(
         model,
         compile_enabled,
-        mode=args.compile_mode,
+        mode=compile_mode,
         fullgraph=compile_fullgraph,
     )
 
@@ -782,7 +799,7 @@ def train(args: argparse.Namespace) -> None:
         f"grad_accum={accum_steps} "
         f"tokens_per_step={tokens_per_step:,} "
         f"compile={compile_enabled} "
-        f"compile_mode={args.compile_mode if compile_enabled else 'disabled'} "
+        f"compile_mode={compile_mode if compile_enabled else 'disabled'} "
         f"compile_fullgraph={compile_fullgraph if compile_enabled else False} "
         f"warmup_steps={warmup_steps}",
         flush=True,
@@ -800,6 +817,7 @@ def train(args: argparse.Namespace) -> None:
         accum_steps,
         tokens_per_step,
         compile_enabled,
+        compile_mode,
         compile_fullgraph,
     )
 
