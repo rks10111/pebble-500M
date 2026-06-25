@@ -4,6 +4,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -61,9 +62,14 @@ class ShardWriter:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Tokenize FineWeb-Edu into deterministic uint16 shards.")
+    parser = argparse.ArgumentParser(description="Tokenize text into deterministic uint16 shards.")
     parser.add_argument("--config", required=True, help="Path to YAML config.")
     parser.add_argument("--out-dir", required=True, help="Directory for token shards and manifests.")
+    parser.add_argument(
+        "--input-jsonl",
+        default=None,
+        help="Optional local JSONL text source for smoke tests. Reads the configured text_field.",
+    )
     parser.add_argument("--train-tokens", type=int, default=None, help="Training token target.")
     parser.add_argument("--val-tokens", type=int, default=None, help="Validation token target.")
     parser.add_argument("--shard-tokens", type=int, default=None, help="Tokens per shard.")
@@ -76,7 +82,29 @@ def _sha1_text(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def _load_stream(cfg: Config, seed: int, shuffle_buffer: int):
+def _load_local_jsonl(path: Path, seed: int) -> list[dict[str, Any]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"input JSONL not found: {path}")
+
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                raise ValueError(f"{path}:{line_number} is not a JSON object")
+            rows.append(record)
+
+    random.Random(seed).shuffle(rows)
+    return rows
+
+
+def _load_stream(cfg: Config, seed: int, shuffle_buffer: int, input_jsonl: str | None):
+    if input_jsonl:
+        return _load_local_jsonl(Path(input_jsonl), seed=seed)
+
     dataset = load_dataset(
         cfg.data.dataset_name,
         cfg.data.dataset_config,
@@ -103,6 +131,7 @@ def prepare(args: argparse.Namespace) -> Path:
     train_target = args.train_tokens if args.train_tokens is not None else cfg.data.train_target_tokens
     val_target = args.val_tokens if args.val_tokens is not None else cfg.data.validation_target_tokens
     shard_tokens = args.shard_tokens if args.shard_tokens is not None else cfg.data.shard_tokens
+    input_jsonl = args.input_jsonl
 
     encoder = tiktoken.get_encoding(cfg.tokenizer.name)
     train_writer = ShardWriter(out_dir, "train", shard_tokens)
@@ -114,7 +143,9 @@ def prepare(args: argparse.Namespace) -> Path:
     docs_kept = 0
 
     with gzip.open(doc_manifest_path, "wt", encoding="utf-8") as doc_manifest:
-        for source_index, row in enumerate(_load_stream(cfg, seed=seed, shuffle_buffer=shuffle_buffer)):
+        for source_index, row in enumerate(
+            _load_stream(cfg, seed=seed, shuffle_buffer=shuffle_buffer, input_jsonl=input_jsonl)
+        ):
             text = row.get(cfg.data.text_field)
             if not isinstance(text, str) or not text.strip():
                 continue
@@ -157,15 +188,19 @@ def prepare(args: argparse.Namespace) -> Path:
     train_writer.flush()
     val_writer.flush()
 
+    dataset_info = {
+        "name": cfg.data.dataset_name,
+        "config": cfg.data.dataset_config,
+        "split": "train",
+        "text_field": cfg.data.text_field,
+    }
+    if input_jsonl:
+        dataset_info["local_jsonl"] = str(Path(input_jsonl).resolve())
+
     manifest = {
         "version": 1,
         "created_unix": int(time.time()),
-        "dataset": {
-            "name": cfg.data.dataset_name,
-            "config": cfg.data.dataset_config,
-            "split": "train",
-            "text_field": cfg.data.text_field,
-        },
+        "dataset": dataset_info,
         "determinism": {
             "seed": int(seed),
             "streaming_shuffle_buffer": int(shuffle_buffer),
