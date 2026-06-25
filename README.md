@@ -154,10 +154,16 @@ AWS_REGION=eu-west-2 scripts/sync_data_to_s3.sh \
 Restore it onto a fresh instance before resuming:
 
 ```bash
-AWS_REGION=eu-west-2 scripts/sync_data_from_s3.sh \
-  s3://statement-llm-training/pebble-500m/data/fineweb-edu-gpt2-50b \
-  /opt/dlami/nvme/pebble-data-50b
+AWS_REGION=eu-west-2 scripts/restore_nvme_from_s3.sh
 ```
+
+This restores:
+
+- `s3://statement-llm-training/pebble-500m/data/fineweb-edu-gpt2-50b` to `/opt/dlami/nvme/pebble-data-50b`
+- `s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b` to `/opt/dlami/nvme/pebble-runs/pebble-500m-50b`
+
+The script refuses to run if `/opt/dlami/nvme` is not mounted, so a large restore does not
+accidentally fill the 300GB root EBS volume.
 
 ## Benchmark Before Full Training
 
@@ -242,22 +248,15 @@ does not block on S3 uploads.
 
 ## Resume
 
-Restore the tokenized data first if this is a fresh instance:
+Restore the NVMe working state first if this is a fresh instance or the local NVMe was reset:
 
 ```bash
-AWS_REGION=eu-west-2 scripts/sync_data_from_s3.sh \
-  s3://statement-llm-training/pebble-500m/data/fineweb-edu-gpt2-50b \
-  /opt/dlami/nvme/pebble-data-50b
+AWS_REGION=eu-west-2 scripts/restore_nvme_from_s3.sh
 ```
 
-Restore run artifacts if they are not already present locally:
-
-```bash
-AWS_REGION=eu-west-2 aws s3 sync \
-  s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b \
-  /opt/dlami/nvme/pebble-runs/pebble-500m-50b \
-  --only-show-errors
-```
+The restore script syncs the tokenized dataset and run artifacts, verifies the dataset manifest
+and shard sizes, then prints the latest available resume command if a `latest-*.pt` checkpoint
+exists locally after restore.
 
 Resume from the latest local checkpoint:
 
