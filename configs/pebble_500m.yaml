@@ -1,0 +1,75 @@
+experiment:
+  name: pebble-500m
+  seed: 1337
+
+aws:
+  instance_type: g7e.2xlarge
+  hourly_usd: 5.845
+
+model:
+  n_layer: 22
+  n_embd: 1280
+  n_head: 20
+  n_kv_head: 20
+  context_length: 1024
+  vocab_size: 50304
+  rope_theta: 10000.0
+  norm_eps: 1.0e-5
+  intermediate_size: 3456
+  dropout: 0.0
+  bias: false
+  tie_embeddings: true
+
+tokenizer:
+  name: gpt2
+  real_vocab_size: 50257
+  model_vocab_size: 50304
+  eod_token: 50256
+  storage_dtype: uint16
+
+data:
+  dataset_name: HuggingFaceFW/fineweb-edu
+  dataset_config: sample-100BT
+  text_field: text
+  seed: 1337
+  streaming_shuffle_buffer: 100000
+  train_target_tokens: 15000000000
+  validation_target_tokens: 50000000
+  shard_tokens: 100000000
+
+training:
+  precision: bf16
+  global_batch_tokens: 524288
+  micro_batch_size: 16
+  compile: true
+  activation_checkpointing: false
+  gradient_clip: 1.0
+  max_tokens: 15000000000
+  eval_interval_tokens: 500000000
+  eval_tokens: 10000000
+  log_interval_steps: 10
+  sample_max_new_tokens: 80
+
+optimizer:
+  name: AdamW
+  fused: true
+  lr: 3.0e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+
+schedule:
+  warmup_tokens: 200000000
+  planned_target_tokens: 20000000000
+  min_lr: 3.0e-5
+
+checkpointing:
+  save_interval_minutes: 45
+  keep_last: 3
+  milestones: [2000000000, 5000000000, 10000000000, 15000000000, 20000000000]
+
+prompts:
+  - "The reason photosynthesis is important is"
+  - "In simple terms, gravity is"
+  - "The history of computers began with"
+  - "A neural network learns by"
+  - "Kerala is known for"

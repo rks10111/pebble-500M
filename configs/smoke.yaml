@@ -1,0 +1,70 @@
+experiment:
+  name: smoke
+  seed: 123
+
+aws:
+  instance_type: local
+  hourly_usd: 0.0
+
+model:
+  n_layer: 2
+  n_embd: 64
+  n_head: 4
+  n_kv_head: 4
+  context_length: 32
+  vocab_size: 512
+  rope_theta: 10000.0
+  norm_eps: 1.0e-5
+  intermediate_size: 128
+  dropout: 0.0
+  bias: false
+  tie_embeddings: true
+
+tokenizer:
+  name: gpt2
+  real_vocab_size: 50257
+  model_vocab_size: 50304
+  eod_token: 50256
+  storage_dtype: uint16
+
+data:
+  dataset_name: HuggingFaceFW/fineweb-edu
+  dataset_config: sample-100BT
+  text_field: text
+  seed: 123
+  streaming_shuffle_buffer: 1000
+  train_target_tokens: 10000
+  validation_target_tokens: 4096
+  shard_tokens: 4096
+
+training:
+  precision: fp32
+  global_batch_tokens: 512
+  micro_batch_size: 4
+  compile: false
+  activation_checkpointing: false
+  gradient_clip: 1.0
+  max_tokens: 2048
+  eval_interval_tokens: 1024
+  eval_tokens: 1024
+  log_interval_steps: 1
+  sample_max_new_tokens: 8
+
+optimizer:
+  name: AdamW
+  fused: false
+  lr: 1.0e-3
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+
+schedule:
+  warmup_tokens: 512
+  planned_target_tokens: 2048
+  min_lr: 1.0e-4
+
+checkpointing:
+  save_interval_minutes: 60
+  keep_last: 2
+  milestones: []
+
+prompts: []
