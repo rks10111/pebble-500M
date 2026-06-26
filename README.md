@@ -274,13 +274,46 @@ pebble-train \
 ```
 
 For the first budget phase, use `--max-tokens 21000000000` to stop at about 21B tokens while keeping
-the config's 30B learning-rate schedule for the later resume.
+the config's 30B learning-rate schedule for the later resume. Because one optimizer step consumes
+`524,288` tokens, the exact stop is the first step at or above the target:
+
+- phase 1: `21,000,355,840` tokens
+- final target: `30,000,283,648` tokens
 
 When `--s3-sync-uri` is set, `pebble-train` syncs checkpoints, `metrics.jsonl`, and `samples.jsonl`
 after every milestone checkpoint, rolling latest checkpoint, and final checkpoint. You can also set
 `PEBBLE_S3_RUN_URI` in the environment instead of passing the flag. Use `--no-s3-sync` to disable
 automatic sync for a run. Checkpoints are written atomically via a temporary file and rename before
-sync, so S3 should not receive a partially written `.pt` file.
+sync, so S3 should not receive a partially written `.pt` file. S3 sync does not pass `--delete`;
+older remote checkpoints may accumulate even after local rolling checkpoints are pruned.
+
+Checkpoint files are PyTorch `.pt` files saved with `torch.save`. The trainer writes:
+
+- `latest-000000040055.pt` for rolling operational checkpoints, named by optimizer step
+- `milestone-21000355840.pt` for milestone checkpoints, named by `tokens_seen`
+
+Each checkpoint payload is a Python dictionary:
+
+```python
+{
+    "model": model.state_dict(),
+    "optimizer": optimizer.state_dict(),
+    "tokens_seen": int,
+    "global_step": int,
+    "config": cfg.raw,
+    "train_loader": train_loader_state,
+    "rng": {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() or None,
+    },
+}
+```
+
+There is no separate scheduler object in the checkpoint. Learning rate is recomputed from
+`tokens_seen`, `schedule.warmup_tokens`, and `schedule.planned_target_tokens`, so both phases must
+use the same planned 30B schedule.
 
 ## Resume
 
@@ -306,7 +339,11 @@ pebble-train \
   --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-30b
 ```
 
-The checkpoint stores model, optimizer, scheduler counters, `tokens_seen`, RNG state, config, and dataloader state.
+Resume restores model weights, optimizer state, `tokens_seen`, `global_step`, train dataloader state,
+and Python/NumPy/Torch/CUDA RNG state. The checkpoint stores the raw config for auditability, but
+the trainer still builds the model from the YAML passed to `--config` before loading weights. Resume
+with architecture-compatible code/config, the same tokenizer settings, and the restored tokenized
+dataset available at the local `--data-dir`.
 
 ## Local Smoke Tests
 
