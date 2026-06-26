@@ -18,6 +18,21 @@ def test_transformer_forward_smoke() -> None:
     assert torch.isfinite(loss)
 
 
+def test_transformer_forward_can_skip_returning_logits() -> None:
+    cfg = load_config("configs/smoke.yaml")
+    model = Transformer(cfg.model)
+    idx = torch.randint(0, cfg.model.vocab_size, (2, cfg.model.context_length))
+
+    logits, full_loss = model(idx, idx)
+    skipped_logits, loss_only = model(idx, idx, return_logits=False)
+
+    assert logits is not None
+    assert skipped_logits is None
+    assert full_loss is not None
+    assert loss_only is not None
+    assert torch.testing.assert_close(loss_only, full_loss) is None
+
+
 def test_lr_schedule_warms_and_decays() -> None:
     warm = lr_for_tokens(256, base_lr=1e-3, min_lr=1e-4, warmup_tokens=512, target_tokens=2048)
     peak = lr_for_tokens(512, base_lr=1e-3, min_lr=1e-4, warmup_tokens=512, target_tokens=2048)

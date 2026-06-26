@@ -264,7 +264,7 @@ def evaluate_metrics(
     started = time.time()
     for x, y, tokens in val_loader.iter_batches(max_tokens=max_tokens):
         with autocast_context(device, cfg.training.precision):
-            _, loss = model(x, y)
+            _, loss = model(x, y, return_logits=False)
         if loss is None:
             raise RuntimeError("model did not return validation loss")
         total_loss += float(loss.item()) * tokens
@@ -864,7 +864,7 @@ def train(args: argparse.Namespace) -> None:
         for _ in range(accum_steps):
             x, y = train_loader.next_batch()
             with autocast_context(device, cfg.training.precision):
-                _, loss = forward_model(x, y)
+                _, loss = forward_model(x, y, return_logits=False)
             if loss is None:
                 raise RuntimeError("model did not return training loss")
             loss_for_metrics = loss.detach().clone()

@@ -132,8 +132,12 @@ class Transformer(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
-        self, idx: torch.Tensor, targets: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        self,
+        idx: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        *,
+        return_logits: bool = True,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         if idx.ndim != 2:
             raise ValueError("idx must have shape [batch, sequence]")
         if idx.size(1) > self.config.context_length:
@@ -148,6 +152,8 @@ class Transformer(nn.Module):
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1))
+        if not return_logits:
+            return None, loss
         return logits, loss
 
     @torch.no_grad()
