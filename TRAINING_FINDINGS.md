@@ -2,14 +2,14 @@
 
 Date: 2026-06-26
 
-These notes summarize the compile, gradient accumulation, and micro-batch sizing findings for the Pebble 500M run. The tokenized dataset contains about 50B train tokens; the current budgeted training target is 35B tokens.
+These notes summarize the compile, gradient accumulation, and micro-batch sizing findings for the Pebble 500M run. The tokenized dataset contains about 50B train tokens; the current budgeted training target is 30B tokens.
 
 ## Current Run Context
 
 - Remote host: `statement-llm`
 - Remote repo: `~/pebble-500M`
 - Local training data: `/opt/dlami/nvme/pebble-data-50b`
-- Main long-run output target: `/opt/dlami/nvme/pebble-runs/pebble-500m-35b`
+- Main long-run output target: `/opt/dlami/nvme/pebble-runs/pebble-500m-30b`
 - Benchmark output: `/opt/dlami/nvme/pebble-runs/mbs-bench-compile-nocg-20260625-183311`
 - GPU: NVIDIA RTX PRO 6000 Blackwell Server Edition
 - GPU memory: about 97.9 GB
@@ -21,9 +21,9 @@ The restored dataset manifest was verified after the instance/NVMe restore:
 
 Budget update:
 
-- Final planned training target: 35B tokens
-- First budget phase stop: 24B tokens via `--max-tokens 24000000000`
-- Phase 2 resumes from the synced S3 checkpoint and trains to the 35B config target
+- Final planned training target: 30B tokens
+- First budget phase stop: 21B tokens via `--max-tokens 21000000000`
+- Phase 2 resumes from the synced S3 checkpoint and trains to the 30B config target
 
 ## Batch Setup
 
@@ -92,7 +92,7 @@ Benchmark command shape:
 
 ```sh
 pebble-train \
-  --config configs/pebble_500m_35b.yaml \
+  --config configs/pebble_500m_30b.yaml \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
   --out-dir "$out" \
   --max-tokens 15728640 \
@@ -141,13 +141,13 @@ Use:
 
 ```sh
 pebble-train \
-  --config configs/pebble_500m_35b.yaml \
+  --config configs/pebble_500m_30b.yaml \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
-  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-35b \
+  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-30b \
   --micro-batch-size 32 \
   --compile \
   --compile-mode max-autotune-no-cudagraphs \
-  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b
+  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-30b
 ```
 
 With the current committed code, `max-autotune-no-cudagraphs` is already the default compile mode. Keeping it explicit in remote run commands is still useful for auditability.

@@ -1,5 +1,5 @@
 experiment:
-  name: pebble-500m-35b
+  name: pebble-500m-30b
   seed: 1337
 
 aws:
@@ -44,7 +44,7 @@ training:
   compile: true
   activation_checkpointing: false
   gradient_clip: 1.0
-  max_tokens: 35000000000
+  max_tokens: 30000000000
   eval_interval_tokens: 500000000
   eval_tokens: 10000000
   log_interval_steps: 10
@@ -59,7 +59,7 @@ optimizer:
 
 schedule:
   warmup_tokens: 200000000
-  planned_target_tokens: 35000000000
+  planned_target_tokens: 30000000000
   min_lr: 3.0e-5
 
 checkpointing:
@@ -96,11 +96,6 @@ checkpointing:
     - 28000000000
     - 29000000000
     - 30000000000
-    - 31000000000
-    - 32000000000
-    - 33000000000
-    - 34000000000
-    - 35000000000
 
 prompts:
   - "The reason photosynthesis is important is"

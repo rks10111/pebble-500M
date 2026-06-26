@@ -6,23 +6,23 @@ This file tracks the optimization work done so far for the Pebble 500M training 
 
 ## Current Recommended Runtime Settings
 
-The current budgeted target is 35B training tokens. The tokenized dataset remains the restored 50B dataset; the extra tokens are just available data.
+The current budgeted target is 30B training tokens. The tokenized dataset remains the restored 50B dataset; the extra tokens are just available data.
 
-For phase 1 this month, stop at 24B tokens while keeping the LR schedule planned for 35B:
+For phase 1 this month, stop at 21B tokens while keeping the LR schedule planned for 30B:
 
 ```sh
 pebble-train \
-  --config configs/pebble_500m_35b.yaml \
+  --config configs/pebble_500m_30b.yaml \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
-  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-35b \
-  --max-tokens 24000000000 \
+  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-30b \
+  --max-tokens 21000000000 \
   --micro-batch-size 32 \
   --compile \
   --compile-mode max-autotune-no-cudagraphs \
-  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b
+  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-30b
 ```
 
-For phase 2 next month, restore the run artifacts from S3 and resume to the config default of 35B tokens.
+For phase 2 next month, restore the run artifacts from S3 and resume to the config default of 30B tokens.
 
 Why:
 
@@ -30,7 +30,7 @@ Why:
 - Uses the fastest tested valid micro-batch size.
 - Keeps gradient accumulation compatible with `torch.compile`.
 - Leaves about 43.8 GB memory headroom on the current 97.9 GB GPU.
-- Keeps the LR schedule aligned to the real final 35B-token target instead of an abandoned 50B target.
+- Keeps the LR schedule aligned to the real final 30B-token target instead of an abandoned 50B target.
 
 ## Implemented Code Optimizations
 
@@ -120,7 +120,7 @@ Benchmark command shape:
 
 ```sh
 pebble-train \
-  --config configs/pebble_500m_35b.yaml \
+  --config configs/pebble_500m_30b.yaml \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
   --out-dir "$out" \
   --max-tokens 15728640 \
@@ -230,7 +230,7 @@ These are intentionally unchanged unless we decide to run a different experiment
 - LR schedule
 - model architecture
 - tokenizer/data
-- target 35B-token run setup using the restored 50B tokenized dataset
+- target 30B-token run setup using the restored 50B tokenized dataset
 
 Notes:
 

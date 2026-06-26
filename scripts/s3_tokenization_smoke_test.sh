@@ -46,7 +46,7 @@ PY
 
 echo "== tokenize tiny local jsonl =="
 pebble-prepare-data \
-  --config configs/pebble_500m_35b.yaml \
+  --config configs/pebble_500m_30b.yaml \
   --input-jsonl "${input_jsonl}" \
   --out-dir "${data_dir}" \
   --train-tokens 1024 \
