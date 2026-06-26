@@ -53,7 +53,7 @@ if [[ -f /opt/pytorch/bin/activate ]]; then
   source /opt/pytorch/bin/activate
 fi
 
-config="${PEBBLE_CONFIG:-configs/pebble_500m_50b.yaml}"
+config="${PEBBLE_CONFIG:-configs/pebble_500m_35b.yaml}"
 data_dir="${PEBBLE_DATA_DIR:-/opt/dlami/nvme/pebble-data-50b}"
 s3_data_uri="${PEBBLE_S3_DATA_URI:-s3://statement-llm-training/pebble-500m/data/fineweb-edu-gpt2-50b}"
 log_dir="${PEBBLE_LOG_DIR:-/opt/dlami/nvme/logs}"

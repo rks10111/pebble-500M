@@ -27,15 +27,15 @@ usage() {
   cat >&2 <<'EOF'
 usage: scripts/restore_nvme_from_s3.sh [data-s3-uri] [run-s3-uri]
 
-Restores the known Pebble 50B S3 prefixes back onto the local NVMe volume.
+Restores the Pebble tokenized data and run artifact S3 prefixes back onto the local NVMe volume.
 
 Environment overrides:
   AWS_REGION                 default: eu-west-2
   PEBBLE_NVME_ROOT           default: /opt/dlami/nvme
   PEBBLE_DATA_DIR            default: /opt/dlami/nvme/pebble-data-50b
-  PEBBLE_RUN_DIR             default: /opt/dlami/nvme/pebble-runs/pebble-500m-50b
+  PEBBLE_RUN_DIR             default: /opt/dlami/nvme/pebble-runs/pebble-500m-35b
   PEBBLE_S3_DATA_URI         default: s3://statement-llm-training/pebble-500m/data/fineweb-edu-gpt2-50b
-  PEBBLE_S3_RUN_URI          default: s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b
+  PEBBLE_S3_RUN_URI          default: s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b
   PEBBLE_RESTORE_DATA        default: 1
   PEBBLE_RESTORE_RUN         default: 1
   PEBBLE_ALLOW_UNMOUNTED_NVME default: 0
@@ -72,9 +72,9 @@ fi
 region="${AWS_REGION:-eu-west-2}"
 nvme_root="${PEBBLE_NVME_ROOT:-/opt/dlami/nvme}"
 data_dir="${PEBBLE_DATA_DIR:-/opt/dlami/nvme/pebble-data-50b}"
-run_dir="${PEBBLE_RUN_DIR:-/opt/dlami/nvme/pebble-runs/pebble-500m-50b}"
+run_dir="${PEBBLE_RUN_DIR:-/opt/dlami/nvme/pebble-runs/pebble-500m-35b}"
 s3_data_uri="${1:-${PEBBLE_S3_DATA_URI:-s3://statement-llm-training/pebble-500m/data/fineweb-edu-gpt2-50b}}"
-s3_run_uri="${2:-${PEBBLE_S3_RUN_URI:-s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b}}"
+s3_run_uri="${2:-${PEBBLE_S3_RUN_URI:-s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b}}"
 restore_data="${PEBBLE_RESTORE_DATA:-1}"
 restore_run="${PEBBLE_RESTORE_RUN:-1}"
 allow_unmounted_nvme="${PEBBLE_ALLOW_UNMOUNTED_NVME:-0}"
@@ -222,11 +222,12 @@ latest_checkpoint="$(find_latest_checkpoint || true)"
 if [[ -n "${latest_checkpoint}" ]]; then
   cat <<EOF
 pebble-train \\
-  --config configs/pebble_500m_50b.yaml \\
+  --config configs/pebble_500m_35b.yaml \\
   --data-dir ${data_dir} \\
   --out-dir ${run_dir} \\
   --resume ${latest_checkpoint} \\
-  --max-tokens 50000000000
+  --max-tokens 35000000000 \\
+  --s3-sync-uri ${s3_run_uri}
 EOF
 else
   echo "No latest checkpoint found under ${run_dir}/checkpoints."

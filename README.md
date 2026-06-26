@@ -117,11 +117,11 @@ pebble-prepare-data \
   --shard-tokens 50000000
 ```
 
-For the 50B-token two-budget-window run:
+For the 50B-token dataset used by the two-budget-window run:
 
 ```bash
 pebble-prepare-data \
-  --config configs/pebble_500m_50b.yaml \
+  --config configs/pebble_500m_35b.yaml \
   --out-dir /opt/dlami/nvme/pebble-data-50b \
   --train-tokens 50000000000 \
   --val-tokens 50000000 \
@@ -172,7 +172,7 @@ AWS_REGION=eu-west-2 scripts/restore_nvme_from_s3.sh
 This restores:
 
 - `s3://statement-llm-training/pebble-500m/data/fineweb-edu-gpt2-50b` to `/opt/dlami/nvme/pebble-data-50b`
-- `s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b` to `/opt/dlami/nvme/pebble-runs/pebble-500m-50b`
+- `s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b` to `/opt/dlami/nvme/pebble-runs/pebble-500m-35b`
 
 The script refuses to run if `/opt/dlami/nvme` is not mounted, so a large restore does not
 accidentally fill the 300GB root EBS volume.
@@ -217,34 +217,36 @@ Decision rule:
 - `55k-70k tok/s`: target `15B-20B`
 - `80k+ tok/s`: `20B` is comfortable
 - `100k+ tok/s`: `30B` becomes plausible
-- `90k+ tok/s` sustained across runs: the two `$500` windows can target `50B`
+- `85k+ tok/s` sustained across runs: target `24B` in the first `$500` window and `35B` total
 
 ## Long Run
 
-The `configs/pebble_500m_50b.yaml` config prepares and schedules for `50B` total tokens.
-With two `$500` budget windows, run to about `25B` in the first window, sync to S3, then
-resume to `50B` in the next window.
+The `configs/pebble_500m_35b.yaml` config uses the restored 50B tokenized dataset, but schedules
+training for a 35B-token budget. With two `$500` budget windows, run to about `24B` in the first
+window, sync to S3, then resume to `35B` in the next window.
 
 First budget window:
 
 ```bash
 pebble-train \
-  --config configs/pebble_500m_50b.yaml \
+  --config configs/pebble_500m_35b.yaml \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
-  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-50b \
-  --max-tokens 25000000000 \
-  --micro-batch-size 16 \
-  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b
+  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-35b \
+  --max-tokens 24000000000 \
+  --micro-batch-size 32 \
+  --compile \
+  --compile-mode max-autotune-no-cudagraphs \
+  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b
 ```
 
-Try micro-batch sizes `8, 16, 24, 32, 40, 48, 64` and use the largest stable value that improves throughput.
+Use `micro_batch_size=32`; it is the fastest stable tested value for this run.
 
 ## Checkpoints
 
 The trainer writes:
 
 - rolling operational checkpoints in `checkpoints/latest-*`
-- milestone checkpoints every `1B` tokens in the 50B config
+- milestone checkpoints every `1B` tokens through the 35B target
 - `metrics.jsonl`
 - fixed prompt samples at milestones
 
@@ -252,8 +254,8 @@ Sync run artifacts to S3 periodically and before stopping or terminating the ins
 
 ```bash
 AWS_REGION=eu-west-2 scripts/sync_checkpoints_to_s3.sh \
-  /opt/dlami/nvme/pebble-runs/pebble-500m-50b \
-  s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b
+  /opt/dlami/nvme/pebble-runs/pebble-500m-35b \
+  s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b
 ```
 
 This script uploads checkpoints, `metrics.jsonl`, and `samples.jsonl`. Training remains local and
@@ -263,13 +265,16 @@ For long runs, prefer automatic sync from the trainer:
 
 ```bash
 pebble-train \
-  --config configs/pebble_500m_50b.yaml \
+  --config configs/pebble_500m_35b.yaml \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
-  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-50b \
-  --resume /opt/dlami/nvme/pebble-runs/pebble-500m-50b/checkpoints/latest-000000000123.pt \
-  --max-tokens 50000000000 \
-  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-50b
+  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-35b \
+  --resume /opt/dlami/nvme/pebble-runs/pebble-500m-35b/checkpoints/latest-000000000123.pt \
+  --max-tokens 35000000000 \
+  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b
 ```
+
+For the first budget phase, use `--max-tokens 24000000000` to stop at about 24B tokens while keeping
+the config's 35B learning-rate schedule for the later resume.
 
 When `--s3-sync-uri` is set, `pebble-train` syncs checkpoints, `metrics.jsonl`, and `samples.jsonl`
 after every milestone checkpoint, rolling latest checkpoint, and final checkpoint. You can also set
@@ -293,11 +298,12 @@ Resume from the latest local checkpoint:
 
 ```bash
 pebble-train \
-  --config configs/pebble_500m_50b.yaml \
+  --config configs/pebble_500m_35b.yaml \
   --data-dir /opt/dlami/nvme/pebble-data-50b \
-  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-50b \
-  --resume /opt/dlami/nvme/pebble-runs/pebble-500m-50b/checkpoints/latest-000000000123.pt \
-  --max-tokens 50000000000
+  --out-dir /opt/dlami/nvme/pebble-runs/pebble-500m-35b \
+  --resume /opt/dlami/nvme/pebble-runs/pebble-500m-35b/checkpoints/latest-000000000123.pt \
+  --max-tokens 35000000000 \
+  --s3-sync-uri s3://statement-llm-training/pebble-500m/runs/pebble-500m-35b
 ```
 
 The checkpoint stores model, optimizer, scheduler counters, `tokens_seen`, RNG state, config, and dataloader state.
