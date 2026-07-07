@@ -419,12 +419,12 @@ def process_rows(
     started = time.time()
 
     for source_index, row in enumerate(rows):
-        split_stats.rows_seen += 1
-        source_stats.rows_seen += 1
         if max_examples is not None and split_stats.examples >= max_examples:
             break
         if target_tokens is not None and writer.total_tokens >= target_tokens:
             break
+        split_stats.rows_seen += 1
+        source_stats.rows_seen += 1
 
         messages = row.get(messages_field) if isinstance(row, dict) else None
         tokens, loss_mask, turn_counts, normalized = encode_messages(

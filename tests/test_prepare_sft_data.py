@@ -91,3 +91,32 @@ def test_process_rows_writes_tokens_masks_and_example_index(tmp_path: Path) -> N
     assert examples[0]["split"] == "train"
     assert examples[0]["tokens"] == writer.total_tokens
     assert examples[0]["assistant_token_count"] == int(masks.sum())
+
+
+def test_process_rows_does_not_count_rows_past_example_cap(tmp_path: Path) -> None:
+    encoder = tiktoken.get_encoding("gpt2")
+    writer = MaskedShardWriter(tmp_path, "train", shard_tokens=128)
+    rows = [
+        {"messages": [{"role": "user", "content": "A?"}, {"role": "assistant", "content": "A."}]},
+        {"messages": [{"role": "user", "content": "B?"}, {"role": "assistant", "content": "B."}]},
+    ]
+
+    with gzip.open(tmp_path / "example_index.jsonl.gz", "wt", encoding="utf-8") as handle:
+        stats = process_rows(
+            rows,
+            split="train",
+            source_name="unit-test",
+            writer=writer,
+            example_index=handle,
+            encoder=encoder,
+            messages_field="messages",
+            default_system_prompt=None,
+            max_sequence_tokens=32,
+            max_examples=1,
+            target_tokens=None,
+            log_interval_rows=0,
+        )
+
+    assert stats.examples == 1
+    assert stats.rows_seen == 1
+    assert stats.sources["unit-test"].rows_seen == 1

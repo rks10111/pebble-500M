@@ -180,6 +180,71 @@ class SFTBatcher:
             count += 1
 
 
+class SFTTrainCursor:
+    def __init__(
+        self,
+        split: SFTSplit,
+        *,
+        batch_size: int,
+        max_examples: int,
+        rng: np.random.Generator,
+    ) -> None:
+        self.split = split
+        self.batch_size = batch_size
+        self.max_examples = max_examples
+        self.rng = rng
+        self.order = np.empty(0, dtype=np.int64)
+        self.position = 0
+        self.examples_consumed = 0
+        self.epochs_started = 0
+        self._start_epoch()
+
+    def _start_epoch(self) -> None:
+        self.order = np.arange(len(self.split.examples), dtype=np.int64)
+        self.rng.shuffle(self.order)
+        self.position = 0
+        self.epochs_started += 1
+
+    def has_more(self) -> bool:
+        return self.examples_consumed < self.max_examples
+
+    def next_refs(self) -> list[ExampleRef] | None:
+        if not self.has_more():
+            return None
+        if self.position >= len(self.order):
+            self._start_epoch()
+        remaining_examples = self.max_examples - self.examples_consumed
+        remaining_epoch = len(self.order) - self.position
+        take = min(self.batch_size, remaining_examples, remaining_epoch)
+        if take <= 0:
+            return None
+        batch_indices = self.order[self.position : self.position + take]
+        self.position += take
+        self.examples_consumed += take
+        return [self.split.examples[int(index)] for index in batch_indices]
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "rng_state": self.rng.bit_generator.state,
+            "order": self.order.tolist(),
+            "position": int(self.position),
+            "examples_consumed": int(self.examples_consumed),
+            "epochs_started": int(self.epochs_started),
+            "max_examples": int(self.max_examples),
+            "batch_size": int(self.batch_size),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if state.get("rng_state") is not None:
+            self.rng.bit_generator.state = state["rng_state"]
+        order = state.get("order")
+        if isinstance(order, list) and order:
+            self.order = np.asarray(order, dtype=np.int64)
+        self.position = int(state.get("position", self.position))
+        self.examples_consumed = int(state.get("examples_consumed", self.examples_consumed))
+        self.epochs_started = int(state.get("epochs_started", self.epochs_started))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Assistant-only SFT training for Pebble chat data.")
     parser.add_argument("--config", default="configs/pebble_500m_30b.yaml", help="Model/config YAML.")
@@ -289,14 +354,6 @@ def move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device)
 def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
         group["lr"] = lr
-
-
-def scale_gradients(model: torch.nn.Module, scale: float) -> None:
-    if scale == 1.0:
-        return
-    for param in model.parameters():
-        if param.grad is not None:
-            param.grad.mul_(scale)
 
 
 def ground_chat_token_rows(state_dict: dict[str, torch.Tensor], *, encoder: tiktoken.Encoding) -> dict[str, Any]:
@@ -434,7 +491,7 @@ def save_sft_checkpoint(
     pretrained_tokens_seen: int,
     pretrained_global_step: int,
     grounding_report: dict[str, Any],
-    data_rng_state: dict[str, Any] | None,
+    data_cursor_state: dict[str, Any] | None,
 ) -> Path:
     checkpoint_dir = out_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -458,7 +515,8 @@ def save_sft_checkpoint(
                 "pretrained_global_step": int(pretrained_global_step),
                 "chat_tokens": CHAT_TOKENS,
                 "grounding_report": grounding_report,
-                "data_rng_state": data_rng_state,
+                "data_cursor_state": data_cursor_state,
+                "data_rng_state": data_cursor_state.get("rng_state") if data_cursor_state else None,
                 "args": vars(args),
             },
             "rng": {
@@ -601,8 +659,18 @@ def train(args: argparse.Namespace) -> None:
     )
 
     rng = np.random.default_rng(args.seed)
-    if resume_sft_state is not None and isinstance(resume_sft_state.get("data_rng_state"), dict):
-        rng.bit_generator.state = resume_sft_state["data_rng_state"]
+    train_cursor = SFTTrainCursor(
+        train_split,
+        batch_size=args.micro_batch_size,
+        max_examples=max_train_examples,
+        rng=rng,
+    )
+    if resume_sft_state is not None:
+        cursor_state = resume_sft_state.get("data_cursor_state")
+        if isinstance(cursor_state, dict):
+            train_cursor.load_state_dict(cursor_state)
+        elif isinstance(resume_sft_state.get("data_rng_state"), dict):
+            rng.bit_generator.state = resume_sft_state["data_rng_state"]
     global_step = int(resume_sft_state.get("step", 0)) if resume_sft_state is not None else 0
     total_tokens_seen = int(resume_sft_state.get("tokens_seen", 0)) if resume_sft_state is not None else 0
     total_supervised_seen = (
@@ -611,148 +679,129 @@ def train(args: argparse.Namespace) -> None:
     optimizer.zero_grad(set_to_none=True)
     accumulated_loss = 0.0
     accumulated_supervised = 0
-    micro_in_step = 0
     started = time.time()
     last_log_time = started
-    last_log_supervised = 0
-    completed = global_step >= planned_steps
+    last_log_supervised = total_supervised_seen
 
-    while not completed:
-        max_examples = max_train_examples
-        examples_consumed = 0
-        epoch_number = 0
-        while examples_consumed < max_examples and not completed:
-            epoch_number += 1
-            for x, y, mask, tokens, supervised_tokens in train_batcher.iter_epoch(rng=rng, shuffle=True):
-                if examples_consumed >= max_examples:
-                    break
-                examples_consumed += x.size(0)
-                lr = lr_for_step(
-                    global_step,
-                    max_steps=planned_steps,
-                    base_lr=args.lr,
-                    min_lr=args.min_lr,
-                    warmup_steps=args.warmup_steps,
-                )
-                set_optimizer_lr(optimizer, lr)
-                with autocast_context(device, precision):
-                    logits, _ = forward_model(x)
-                    loss = masked_cross_entropy(logits, y, mask)
-                (loss / args.grad_accum_steps).backward()
-                accumulated_loss += float(loss.detach().item()) * supervised_tokens
-                accumulated_supervised += supervised_tokens
-                total_tokens_seen += tokens
-                total_supervised_seen += supervised_tokens
-                micro_in_step += 1
-
-                if micro_in_step < args.grad_accum_steps:
-                    continue
-
-                grad_norm = None
-                if args.gradient_clip > 0:
-                    grad_norm_t = torch.nn.utils.clip_grad_norm_(model.parameters(), args.gradient_clip)
-                    grad_norm = float(grad_norm_t.detach().item())
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                global_step += 1
-                micro_in_step = 0
-
-                if global_step % args.log_interval_steps == 0:
-                    if device.type == "cuda":
-                        torch.cuda.synchronize()
-                    now = time.time()
-                    interval_supervised = total_supervised_seen - last_log_supervised
-                    interval_seconds = max(now - last_log_time, 1e-6)
-                    train_loss = accumulated_loss / max(accumulated_supervised, 1)
-                    epoch_float = examples_consumed / max(len(train_split), 1)
-                    metrics = {
-                        "type": "train",
-                        "step": int(global_step),
-                        "epoch": epoch_float,
-                        "tokens_seen": int(total_tokens_seen),
-                        "supervised_tokens_seen": int(total_supervised_seen),
-                        "loss": train_loss,
-                        "perplexity": safe_perplexity(train_loss),
-                        "lr": lr,
-                        "grad_norm": grad_norm,
-                        "micro_batch_size": int(args.micro_batch_size),
-                        "grad_accum_steps": int(args.grad_accum_steps),
-                        "supervised_tokens_per_sec_interval": interval_supervised / interval_seconds,
-                        "wall_seconds": now - started,
-                        **cuda_memory_metrics(device),
-                    }
-                    append_jsonl(metrics_path, metrics)
-                    log_wandb(wandb_run, {k: v for k, v in metrics.items() if isinstance(v, (int, float))})
-                    print(
-                        f"step={global_step} epoch={epoch_float:.3f} loss={train_loss:.4f} "
-                        f"lr={lr:.2e} supervised_tok/s={metrics['supervised_tokens_per_sec_interval']:.0f}",
-                        flush=True,
-                    )
-                    accumulated_loss = 0.0
-                    accumulated_supervised = 0
-                    last_log_time = now
-                    last_log_supervised = total_supervised_seen
-
-                if global_step % args.eval_interval_steps == 0:
-                    val_metrics = {
-                        "type": "validation",
-                        "step": int(global_step),
-                        "tokens_seen": int(total_tokens_seen),
-                        "supervised_tokens_seen": int(total_supervised_seen),
-                        **evaluate(
-                            forward_model,
-                            val_batcher,
-                            device=device,
-                            precision=precision,
-                            max_batches=args.eval_batches,
-                        ),
-                    }
-                    append_jsonl(metrics_path, val_metrics)
-                    log_wandb(wandb_run, {k: v for k, v in val_metrics.items() if isinstance(v, (int, float))})
-                    print(
-                        f"validation step={global_step} loss={val_metrics['loss']:.4f} "
-                        f"ppl={val_metrics['perplexity']}",
-                        flush=True,
-                    )
-
-                if global_step % args.save_interval_steps == 0:
-                    path = save_sft_checkpoint(
-                        out_dir,
-                        name=f"latest-sft-{global_step:08d}.pt",
-                        model=model,
-                        optimizer=optimizer,
-                        cfg=cfg,
-                        args=args,
-                        step=global_step,
-                        epoch=examples_consumed / max(len(train_split), 1),
-                        total_tokens=total_tokens_seen,
-                        supervised_tokens=total_supervised_seen,
-                        pretrained_tokens_seen=pretrained_tokens_seen,
-                        pretrained_global_step=pretrained_global_step,
-                        grounding_report=grounding_report,
-                        data_rng_state=rng.bit_generator.state,
-                    )
-                    print(f"saved checkpoint {path}", flush=True)
-
-                if global_step >= planned_steps:
-                    completed = True
-                    break
-            if args.epochs <= 1:
+    while global_step < planned_steps and train_cursor.has_more():
+        micro_batches: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]] = []
+        group_supervised = 0
+        while len(micro_batches) < args.grad_accum_steps and train_cursor.has_more():
+            refs = train_cursor.next_refs()
+            if not refs:
                 break
+            batch = train_batcher.batch_from_refs(refs)
+            micro_batches.append(batch)
+            group_supervised += batch[4]
 
-        if global_step >= planned_steps or examples_consumed >= max_examples:
-            completed = True
+        if not micro_batches:
+            break
+        if group_supervised <= 0:
+            raise ValueError("optimizer step has no supervised assistant tokens")
 
-    if micro_in_step:
+        lr = lr_for_step(
+            global_step,
+            max_steps=planned_steps,
+            base_lr=args.lr,
+            min_lr=args.min_lr,
+            warmup_steps=args.warmup_steps,
+        )
+        set_optimizer_lr(optimizer, lr)
+
+        for x, y, mask, tokens, supervised_tokens in micro_batches:
+            with autocast_context(device, precision):
+                logits, _ = forward_model(x)
+                loss = masked_cross_entropy(logits, y, mask)
+            (loss * (supervised_tokens / group_supervised)).backward()
+            accumulated_loss += float(loss.detach().item()) * supervised_tokens
+            accumulated_supervised += supervised_tokens
+            total_tokens_seen += tokens
+            total_supervised_seen += supervised_tokens
+
         grad_norm = None
-        scale_gradients(model, args.grad_accum_steps / micro_in_step)
         if args.gradient_clip > 0:
             grad_norm_t = torch.nn.utils.clip_grad_norm_(model.parameters(), args.gradient_clip)
             grad_norm = float(grad_norm_t.detach().item())
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         global_step += 1
-        print(f"completed partial final step={global_step} grad_norm={grad_norm}", flush=True)
+
+        if global_step % args.log_interval_steps == 0:
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            now = time.time()
+            interval_supervised = total_supervised_seen - last_log_supervised
+            interval_seconds = max(now - last_log_time, 1e-6)
+            train_loss = accumulated_loss / max(accumulated_supervised, 1)
+            epoch_float = train_cursor.examples_consumed / max(len(train_split), 1)
+            metrics = {
+                "type": "train",
+                "step": int(global_step),
+                "epoch": epoch_float,
+                "tokens_seen": int(total_tokens_seen),
+                "supervised_tokens_seen": int(total_supervised_seen),
+                "loss": train_loss,
+                "perplexity": safe_perplexity(train_loss),
+                "lr": lr,
+                "grad_norm": grad_norm,
+                "micro_batch_size": int(args.micro_batch_size),
+                "grad_accum_steps": int(args.grad_accum_steps),
+                "supervised_tokens_per_sec_interval": interval_supervised / interval_seconds,
+                "wall_seconds": now - started,
+                **cuda_memory_metrics(device),
+            }
+            append_jsonl(metrics_path, metrics)
+            log_wandb(wandb_run, {k: v for k, v in metrics.items() if isinstance(v, (int, float))})
+            print(
+                f"step={global_step} epoch={epoch_float:.3f} loss={train_loss:.4f} "
+                f"lr={lr:.2e} supervised_tok/s={metrics['supervised_tokens_per_sec_interval']:.0f}",
+                flush=True,
+            )
+            accumulated_loss = 0.0
+            accumulated_supervised = 0
+            last_log_time = now
+            last_log_supervised = total_supervised_seen
+
+        if global_step % args.eval_interval_steps == 0:
+            val_metrics = {
+                "type": "validation",
+                "step": int(global_step),
+                "tokens_seen": int(total_tokens_seen),
+                "supervised_tokens_seen": int(total_supervised_seen),
+                **evaluate(
+                    forward_model,
+                    val_batcher,
+                    device=device,
+                    precision=precision,
+                    max_batches=args.eval_batches,
+                ),
+            }
+            append_jsonl(metrics_path, val_metrics)
+            log_wandb(wandb_run, {k: v for k, v in val_metrics.items() if isinstance(v, (int, float))})
+            print(
+                f"validation step={global_step} loss={val_metrics['loss']:.4f} "
+                f"ppl={val_metrics['perplexity']}",
+                flush=True,
+            )
+
+        if global_step % args.save_interval_steps == 0:
+            path = save_sft_checkpoint(
+                out_dir,
+                name=f"latest-sft-{global_step:08d}.pt",
+                model=model,
+                optimizer=optimizer,
+                cfg=cfg,
+                args=args,
+                step=global_step,
+                epoch=train_cursor.examples_consumed / max(len(train_split), 1),
+                total_tokens=total_tokens_seen,
+                supervised_tokens=total_supervised_seen,
+                pretrained_tokens_seen=pretrained_tokens_seen,
+                pretrained_global_step=pretrained_global_step,
+                grounding_report=grounding_report,
+                data_cursor_state=train_cursor.state_dict(),
+            )
+            print(f"saved checkpoint {path}", flush=True)
 
     final_eval = evaluate(
         forward_model,
@@ -769,13 +818,13 @@ def train(args: argparse.Namespace) -> None:
         cfg=cfg,
         args=args,
         step=global_step,
-        epoch=min(args.epochs, total_tokens_seen / max(manifest["splits"]["train"]["tokens"], 1)),
+        epoch=min(args.epochs, train_cursor.examples_consumed / max(len(train_split), 1)),
         total_tokens=total_tokens_seen,
         supervised_tokens=total_supervised_seen,
         pretrained_tokens_seen=pretrained_tokens_seen,
         pretrained_global_step=pretrained_global_step,
         grounding_report=grounding_report,
-        data_rng_state=rng.bit_generator.state,
+        data_cursor_state=train_cursor.state_dict(),
     )
     final_metrics = {
         "type": "final",
