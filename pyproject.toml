@@ -22,8 +22,10 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 pebble-prepare-data = "pebble.prepare_fineweb_edu:main"
+pebble-prepare-sft-data = "pebble.prepare_sft_data:main"
 pebble-make-synthetic-data = "pebble.make_synthetic_data:main"
 pebble-train = "pebble.train:main"
+pebble-generate = "pebble.generate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

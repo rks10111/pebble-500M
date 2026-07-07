@@ -4,6 +4,7 @@ import torch
 import pytest
 
 from pebble.config import load_config
+from pebble.generate import TokenByteDecoder
 from pebble.model import Transformer, lr_for_tokens
 from pebble.train import grad_accum_steps
 
@@ -47,3 +48,29 @@ def test_grad_accum_steps_requires_exact_global_batch() -> None:
 
     with pytest.raises(ValueError, match="exactly divisible"):
         grad_accum_steps(global_batch_tokens=524288, micro_batch_size=48, context_length=1024)
+
+
+class _FakeEncoding:
+    def __init__(self, token_bytes: dict[int, bytes]) -> None:
+        self.token_bytes = token_bytes
+
+    def decode_single_token_bytes(self, token_id: int) -> bytes:
+        return self.token_bytes[token_id]
+
+
+def test_token_byte_decoder_waits_for_complete_utf8_character() -> None:
+    decoder = TokenByteDecoder(_FakeEncoding({1: b"\xe2", 2: b"\x80", 3: b"\x99"}))
+
+    assert decoder.decode_token(1) == ""
+    assert decoder.decode_token(2) == ""
+    assert decoder.decode_token(3) == "\u2019"
+    assert decoder.finish() == ""
+
+
+def test_token_byte_decoder_drops_malformed_utf8_without_replacement_character() -> None:
+    decoder = TokenByteDecoder(_FakeEncoding({1: b"\xe2", 2: b"'", 3: b" ok"}))
+
+    text = decoder.decode_token(1) + decoder.decode_token(2) + decoder.decode_token(3) + decoder.finish()
+
+    assert text == "' ok"
+    assert "\ufffd" not in text

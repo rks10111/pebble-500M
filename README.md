@@ -345,6 +345,33 @@ the trainer still builds the model from the YAML passed to `--config` before loa
 with architecture-compatible code/config, the same tokenizer settings, and the restored tokenized
 dataset available at the local `--data-dir`.
 
+## Local Generation
+
+Run a downloaded checkpoint interactively:
+
+```bash
+uv run pebble-generate \
+  --checkpoint checkpoints/pebble-500m-30b/latest-000000006904.pt \
+  --max-new-tokens 128
+```
+
+Type a prompt and press return. The command prints your prompt in a `You` box, then opens a
+`Pebble` box with the same prompt prefix and streams generated text into it as tokens are sampled.
+Generated token bytes are decoded with an incremental UTF-8 decoder, so split byte-level tokens do
+not render as replacement characters while streaming. It stops when the model samples the EOD token
+or reaches `--max-new-tokens`. Use `/exit`, `/quit`, or Ctrl-D to stop.
+
+Run one non-interactive completion:
+
+```bash
+uv run pebble-generate \
+  --checkpoint checkpoints/pebble-500m-30b/latest-000000006904.pt \
+  --prompt "The reason photosynthesis is important is" \
+  --max-new-tokens 64
+```
+
+For script-friendly raw text without the chat boxes, add `--plain`.
+
 ## Local Smoke Tests
 
 ```bash
