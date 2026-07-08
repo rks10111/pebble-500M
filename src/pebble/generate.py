@@ -155,7 +155,7 @@ def print_box(title: str, text: str) -> None:
         ) or [""]
         for line in wrapped:
             print(f"| {line:<{body_width}} |", flush=True)
-        print("+" + ("-" * (width - 2)) + "+", flush=True)
+    print("+" + ("-" * (width - 2)) + "+", flush=True)
 
 
 def chat_tokens_from_checkpoint(checkpoint: dict[str, Any]) -> dict[str, int]:

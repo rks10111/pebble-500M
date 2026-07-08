@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -47,6 +48,18 @@ CHAT_TOKEN_SOURCES = {
     "<|assistant|>": "Assistant:",
 }
 DEFAULT_END_SOURCE_ID = 50256
+RESUME_COMPAT_ARGS = (
+    "micro_batch_size",
+    "grad_accum_steps",
+    "lr",
+    "min_lr",
+    "warmup_steps",
+    "weight_decay",
+    "beta1",
+    "beta2",
+    "gradient_clip",
+    "precision",
+)
 
 
 @dataclass(frozen=True)
@@ -243,6 +256,52 @@ class SFTTrainCursor:
         self.position = int(state.get("position", self.position))
         self.examples_consumed = int(state.get("examples_consumed", self.examples_consumed))
         self.epochs_started = int(state.get("epochs_started", self.epochs_started))
+        if len(self.order) != len(self.split.examples):
+            raise ValueError("resume cursor order does not match train split size")
+        if self.position < 0 or self.position > len(self.order):
+            raise ValueError("resume cursor position is outside the train split")
+        if self.examples_consumed < 0:
+            raise ValueError("resume cursor examples_consumed is invalid")
+
+
+def stable_json_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def resume_runtime_args(args: argparse.Namespace, precision: str) -> dict[str, Any]:
+    values = {name: getattr(args, name) for name in RESUME_COMPAT_ARGS if name != "precision"}
+    values["precision"] = precision
+    return values
+
+
+def validate_resume_metadata(
+    sft_state: dict[str, Any],
+    *,
+    manifest_hash: str,
+    config_hash: str,
+    runtime_args: dict[str, Any],
+    allow_unsafe: bool,
+) -> None:
+    errors: list[str] = []
+    saved_manifest_hash = sft_state.get("dataset_manifest_hash")
+    saved_config_hash = sft_state.get("config_hash")
+    saved_runtime_args = sft_state.get("runtime_args")
+
+    if saved_manifest_hash != manifest_hash:
+        errors.append("dataset manifest hash differs or is missing")
+    if saved_config_hash != config_hash:
+        errors.append("model config hash differs or is missing")
+    if not isinstance(saved_runtime_args, dict):
+        errors.append("runtime arg metadata is missing")
+    else:
+        for name, value in runtime_args.items():
+            if saved_runtime_args.get(name) != value:
+                errors.append(f"{name} differs: checkpoint={saved_runtime_args.get(name)!r} current={value!r}")
+
+    if errors and not allow_unsafe:
+        details = "; ".join(errors)
+        raise ValueError(f"unsafe SFT resume: {details}. Use --allow-unsafe-resume to override.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -255,6 +314,11 @@ def parse_args() -> argparse.Namespace:
         help="Pretrained Pebble checkpoint to load weights from. Required unless --resume is set.",
     )
     parser.add_argument("--resume", default=None, help="Optional SFT checkpoint to resume from.")
+    parser.add_argument(
+        "--allow-unsafe-resume",
+        action="store_true",
+        help="Allow resume when dataset/config/runtime metadata do not match the checkpoint.",
+    )
     parser.add_argument("--out-dir", required=True, help="Output directory for SFT checkpoints and metrics.")
     parser.add_argument(
         "--overwrite-output",
@@ -492,6 +556,9 @@ def save_sft_checkpoint(
     pretrained_global_step: int,
     grounding_report: dict[str, Any],
     data_cursor_state: dict[str, Any] | None,
+    dataset_manifest_hash: str,
+    config_hash: str,
+    runtime_args: dict[str, Any],
 ) -> Path:
     checkpoint_dir = out_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -515,6 +582,9 @@ def save_sft_checkpoint(
                 "pretrained_global_step": int(pretrained_global_step),
                 "chat_tokens": CHAT_TOKENS,
                 "grounding_report": grounding_report,
+                "dataset_manifest_hash": dataset_manifest_hash,
+                "config_hash": config_hash,
+                "runtime_args": runtime_args,
                 "data_cursor_state": data_cursor_state,
                 "data_rng_state": data_cursor_state.get("rng_state") if data_cursor_state else None,
                 "args": vars(args),
@@ -569,6 +639,9 @@ def train(args: argparse.Namespace) -> None:
         raise ValueError(f"{metrics_path} already exists; use --resume or --overwrite-output")
 
     manifest = json.loads((data_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest_hash = stable_json_hash(manifest)
+    config_hash = stable_json_hash(cfg.raw)
+    runtime_args = resume_runtime_args(args, precision)
     if manifest.get("task") != "chat-sft-assistant-mask":
         raise ValueError(f"{data_dir} is not a masked chat SFT dataset")
     if manifest["tokenizer"]["chat_tokens"] != CHAT_TOKENS:
@@ -622,6 +695,14 @@ def train(args: argparse.Namespace) -> None:
         planned_steps = min(planned_steps, args.max_steps)
     if planned_steps <= 0:
         raise ValueError("planned SFT steps must be positive")
+    if resume_sft_state is not None:
+        validate_resume_metadata(
+            resume_sft_state,
+            manifest_hash=manifest_hash,
+            config_hash=config_hash,
+            runtime_args=runtime_args,
+            allow_unsafe=args.allow_unsafe_resume,
+        )
 
     run_config = {
         **cfg.raw,
@@ -800,6 +881,9 @@ def train(args: argparse.Namespace) -> None:
                 pretrained_global_step=pretrained_global_step,
                 grounding_report=grounding_report,
                 data_cursor_state=train_cursor.state_dict(),
+                dataset_manifest_hash=manifest_hash,
+                config_hash=config_hash,
+                runtime_args=runtime_args,
             )
             print(f"saved checkpoint {path}", flush=True)
 
@@ -825,6 +909,9 @@ def train(args: argparse.Namespace) -> None:
         pretrained_global_step=pretrained_global_step,
         grounding_report=grounding_report,
         data_cursor_state=train_cursor.state_dict(),
+        dataset_manifest_hash=manifest_hash,
+        config_hash=config_hash,
+        runtime_args=runtime_args,
     )
     final_metrics = {
         "type": "final",

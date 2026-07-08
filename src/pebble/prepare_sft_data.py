@@ -445,6 +445,8 @@ def process_rows(
         if len(tokens) > max_sequence_tokens:
             split_stats.add_skip(source_name, "too_long")
             continue
+        if target_tokens is not None and writer.total_tokens + len(tokens) > target_tokens:
+            break
         if max(tokens) >= np.iinfo(np.uint16).max:
             raise ValueError("token id exceeded uint16 storage")
 

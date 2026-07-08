@@ -120,3 +120,32 @@ def test_process_rows_does_not_count_rows_past_example_cap(tmp_path: Path) -> No
     assert stats.examples == 1
     assert stats.rows_seen == 1
     assert stats.sources["unit-test"].rows_seen == 1
+
+
+def test_process_rows_keeps_target_tokens_as_hard_cap(tmp_path: Path) -> None:
+    encoder = tiktoken.get_encoding("gpt2")
+    writer = MaskedShardWriter(tmp_path, "train", shard_tokens=128)
+    rows = [
+        {"messages": [{"role": "user", "content": "A?"}, {"role": "assistant", "content": "A."}]},
+        {"messages": [{"role": "user", "content": "B?"}, {"role": "assistant", "content": "B."}]},
+    ]
+    first_tokens, _, _, _ = encode_messages(rows[0]["messages"], encoder=encoder, default_system_prompt=None)
+
+    with gzip.open(tmp_path / "example_index.jsonl.gz", "wt", encoding="utf-8") as handle:
+        stats = process_rows(
+            rows,
+            split="train",
+            source_name="unit-test",
+            writer=writer,
+            example_index=handle,
+            encoder=encoder,
+            messages_field="messages",
+            default_system_prompt=None,
+            max_sequence_tokens=32,
+            max_examples=None,
+            target_tokens=len(first_tokens),
+            log_interval_rows=0,
+        )
+
+    assert stats.examples == 1
+    assert writer.total_tokens == len(first_tokens)

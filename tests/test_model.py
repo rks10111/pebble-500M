@@ -4,7 +4,7 @@ import torch
 import pytest
 
 from pebble.config import load_config
-from pebble.generate import TokenByteDecoder
+from pebble.generate import TokenByteDecoder, print_box
 from pebble.model import Transformer, lr_for_tokens
 from pebble.train import grad_accum_steps
 
@@ -74,3 +74,13 @@ def test_token_byte_decoder_drops_malformed_utf8_without_replacement_character()
 
     assert text == "' ok"
     assert "\ufffd" not in text
+
+
+def test_print_box_closes_multiline_text_once(capsys: pytest.CaptureFixture[str]) -> None:
+    print_box("Prompt", "line one\nline two")
+
+    lines = capsys.readouterr().out.splitlines()
+    border_lines = [line for line in lines if line.startswith("+")]
+    assert len(border_lines) == 2
+    assert any("line one" in line for line in lines)
+    assert any("line two" in line for line in lines)
