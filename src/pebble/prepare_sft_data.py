@@ -4,6 +4,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,26 @@ ROLE_TOKEN_NAMES = {
     "user": "<|user|>",
     "assistant": "<|assistant|>",
 }
+NON_PEBBLE_IDENTITY_PATTERNS = (
+    re.compile(r"\b[Mm]y name is\s+(?!Pebble\b)([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)\b"),
+    re.compile(r"\b[Ii](?:'m| am)\s+(?!Pebble\b)([A-Z][A-Za-z]+\s+[A-Z][A-Za-z]+)\b"),
+    re.compile(r"\b[Mm]y designation is\s+(?!Pebble\b)([A-Z][A-Za-z0-9-]+)\b"),
+    re.compile(r"\b[Ii] go by\s+(?!Pebble\b)([A-Z][A-Za-z0-9-]+)\b"),
+)
+IDENTITY_QUERY_PATTERN = re.compile(
+    r"\b("
+    r"what(?:'s| is) your name|"
+    r"who are you|"
+    r"tell me your name|"
+    r"state your role|"
+    r"confirm your assistant identity|"
+    r"introduce yourself"
+    r")\b",
+    re.IGNORECASE,
+)
+CONDITIONAL_NON_PEBBLE_IDENTITY_PATTERN = re.compile(
+    r"\b[Ii](?:'m| am)\s+(?!Pebble\b)([A-Z][A-Za-z0-9-]+)\b"
+)
 
 
 @dataclass
@@ -46,6 +67,7 @@ class SourceStats:
     skipped_no_assistant: int = 0
     skipped_no_assistant_tokens: int = 0
     skipped_too_long: int = 0
+    skipped_identity_contamination: int = 0
 
     def add_kept(self, token_count: int, assistant_token_count: int, *, multi_turn: bool) -> None:
         self.examples += 1
@@ -67,6 +89,7 @@ class SourceStats:
             "skipped_no_assistant": int(self.skipped_no_assistant),
             "skipped_no_assistant_tokens": int(self.skipped_no_assistant_tokens),
             "skipped_too_long": int(self.skipped_too_long),
+            "skipped_identity_contamination": int(self.skipped_identity_contamination),
         }
 
 
@@ -82,6 +105,7 @@ class SplitStats:
     skipped_no_assistant: int = 0
     skipped_no_assistant_tokens: int = 0
     skipped_too_long: int = 0
+    skipped_identity_contamination: int = 0
     lengths: list[int] = field(default_factory=list)
     sources: dict[str, SourceStats] = field(default_factory=dict)
 
@@ -121,6 +145,9 @@ class SplitStats:
         elif reason == "too_long":
             self.skipped_too_long += 1
             source.skipped_too_long += 1
+        elif reason == "identity_contamination":
+            self.skipped_identity_contamination += 1
+            source.skipped_identity_contamination += 1
         else:
             raise ValueError(f"unknown skip reason {reason!r}")
 
@@ -140,6 +167,7 @@ class SplitStats:
             "skipped_no_assistant": int(self.skipped_no_assistant),
             "skipped_no_assistant_tokens": int(self.skipped_no_assistant_tokens),
             "skipped_too_long": int(self.skipped_too_long),
+            "skipped_identity_contamination": int(self.skipped_identity_contamination),
             "max_example_tokens": int(self.max_tokens),
             "p50_example_tokens": self.quantile(50),
             "p95_example_tokens": self.quantile(95),
@@ -239,6 +267,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not insert a default system prompt.",
     )
+    parser.add_argument(
+        "--allow-non-pebble-identity-answers",
+        action="store_false",
+        dest="drop_non_pebble_identity_answers",
+        default=True,
+        help=(
+            "Keep assistant self-identification answers such as 'My name is Emily'. "
+            "By default these are dropped so Pebble SFT data does not teach alternate assistant names."
+        ),
+    )
     parser.add_argument("--train-target-tokens", type=int, default=None, help="Optional train token cap.")
     parser.add_argument(
         "--validation-target-tokens",
@@ -328,6 +366,22 @@ def normalized_messages(messages: Any, default_system_prompt: str | None = None)
     return normalized
 
 
+def has_non_pebble_identity_answer(messages: list[tuple[str, str]]) -> bool:
+    has_identity_query = any(
+        role == "user" and IDENTITY_QUERY_PATTERN.search(content)
+        for role, content in messages
+    )
+    for role, content in messages:
+        if role != "assistant":
+            continue
+        for pattern in NON_PEBBLE_IDENTITY_PATTERNS:
+            if pattern.search(content):
+                return True
+        if has_identity_query and CONDITIONAL_NON_PEBBLE_IDENTITY_PATTERN.search(content):
+            return True
+    return False
+
+
 def encode_messages(
     messages: Any,
     *,
@@ -412,6 +466,7 @@ def process_rows(
     max_examples: int | None,
     target_tokens: int | None,
     log_interval_rows: int,
+    drop_non_pebble_identity_answers: bool,
     stats: SplitStats | None = None,
 ) -> SplitStats:
     split_stats = stats or SplitStats()
@@ -434,6 +489,9 @@ def process_rows(
         )
         if not normalized:
             split_stats.add_skip(source_name, "no_messages")
+            continue
+        if drop_non_pebble_identity_answers and has_non_pebble_identity_answer(normalized):
+            split_stats.add_skip(source_name, "identity_contamination")
             continue
         if turn_counts["assistant_turns"] <= 0:
             split_stats.add_skip(source_name, "no_assistant")
@@ -555,6 +613,7 @@ def prepare(args: argparse.Namespace) -> Path:
                 max_examples=args.max_train_examples,
                 target_tokens=args.train_target_tokens,
                 log_interval_rows=args.log_interval_rows,
+                drop_non_pebble_identity_answers=args.drop_non_pebble_identity_answers,
                 stats=train_stats,
             )
         for path_text in args.extra_train_jsonl:
@@ -572,6 +631,7 @@ def prepare(args: argparse.Namespace) -> Path:
                 max_examples=args.max_train_examples,
                 target_tokens=args.train_target_tokens,
                 log_interval_rows=args.log_interval_rows,
+                drop_non_pebble_identity_answers=args.drop_non_pebble_identity_answers,
                 stats=train_stats,
             )
 
@@ -596,6 +656,7 @@ def prepare(args: argparse.Namespace) -> Path:
                 max_examples=args.max_validation_examples,
                 target_tokens=args.validation_target_tokens,
                 log_interval_rows=args.log_interval_rows,
+                drop_non_pebble_identity_answers=args.drop_non_pebble_identity_answers,
                 stats=val_stats,
             )
         for path_text in args.extra_val_jsonl:
@@ -613,6 +674,7 @@ def prepare(args: argparse.Namespace) -> Path:
                 max_examples=args.max_validation_examples,
                 target_tokens=args.validation_target_tokens,
                 log_interval_rows=args.log_interval_rows,
+                drop_non_pebble_identity_answers=args.drop_non_pebble_identity_answers,
                 stats=val_stats,
             )
 
@@ -646,6 +708,8 @@ def prepare(args: argparse.Namespace) -> Path:
             "max_sequence_tokens": int(args.max_sequence_tokens),
             "max_train_examples": args.max_train_examples,
             "max_validation_examples": args.max_validation_examples,
+            "drop_non_pebble_identity_answers": bool(args.drop_non_pebble_identity_answers),
+            "non_pebble_identity_patterns": [pattern.pattern for pattern in NON_PEBBLE_IDENTITY_PATTERNS],
         },
         "tokenizer": {
             "name": args.tokenizer,

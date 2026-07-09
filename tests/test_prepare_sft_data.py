@@ -68,6 +68,7 @@ def test_process_rows_writes_tokens_masks_and_example_index(tmp_path: Path) -> N
             max_examples=None,
             target_tokens=None,
             log_interval_rows=0,
+            drop_non_pebble_identity_answers=True,
         )
 
     assert stats.rows_seen == 4
@@ -115,6 +116,7 @@ def test_process_rows_does_not_count_rows_past_example_cap(tmp_path: Path) -> No
             max_examples=1,
             target_tokens=None,
             log_interval_rows=0,
+            drop_non_pebble_identity_answers=True,
         )
 
     assert stats.examples == 1
@@ -145,7 +147,61 @@ def test_process_rows_keeps_target_tokens_as_hard_cap(tmp_path: Path) -> None:
             max_examples=None,
             target_tokens=len(first_tokens),
             log_interval_rows=0,
+            drop_non_pebble_identity_answers=True,
         )
 
     assert stats.examples == 1
     assert writer.total_tokens == len(first_tokens)
+
+
+def test_process_rows_drops_non_pebble_identity_answers(tmp_path: Path) -> None:
+    encoder = tiktoken.get_encoding("gpt2")
+    writer = MaskedShardWriter(tmp_path, "train", shard_tokens=128)
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "What is your name?"},
+                {"role": "assistant", "content": "My name is Emily."},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "What is your name?"},
+                {"role": "assistant", "content": "My name is Pebble."},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "Who are you?"},
+                {"role": "assistant", "content": "I'm Emily."},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "Share one meditation quote."},
+                {"role": "assistant", "content": "\"Be still, and know that I am God.\""},
+            ]
+        },
+    ]
+
+    with gzip.open(tmp_path / "example_index.jsonl.gz", "wt", encoding="utf-8") as handle:
+        stats = process_rows(
+            rows,
+            split="train",
+            source_name="unit-test",
+            writer=writer,
+            example_index=handle,
+            encoder=encoder,
+            messages_field="messages",
+            default_system_prompt="You are Pebble.",
+            max_sequence_tokens=32,
+            max_examples=None,
+            target_tokens=None,
+            log_interval_rows=0,
+            drop_non_pebble_identity_answers=True,
+        )
+
+    assert stats.rows_seen == 4
+    assert stats.examples == 2
+    assert stats.skipped_identity_contamination == 2
+    assert stats.sources["unit-test"].skipped_identity_contamination == 2
